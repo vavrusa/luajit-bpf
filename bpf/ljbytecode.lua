@@ -1,0 +1,53 @@
+local jutil = require("jit.util")
+local bit = require('bit')
+local shr, band = bit.rshift, bit.band
+
+-- Decode LuaJIT 2.0 Byte Format
+-- Reference: http://wiki.luajit.org/Bytecode-2.0
+-- Thanks to LJ, we get code in portable bytecode with constants folded, basic
+-- virtual registers allocated etc.
+-- No SSA IR, type inference or advanced optimizations because the code wasn't traced yet.
+local function decode_ins(func, pc)
+	local ins, m = jutil.funcbc(func, pc)
+	if not ins then return nil end
+	local op, ma, mb, mc = band(ins, 0xff), band(m, 7), band(m, 15*8), band(m, 15*128)
+	local a, b, c, d = band(shr(ins, 8), 0xff), nil, nil, shr(ins, 16)
+	if mb ~= 0 then
+		d = band(d, 0xff)
+		b = shr(ins, 24)
+	end
+	if ma == 5 then          -- BCMuv
+	    a = jutil.funcuvname(func, a)
+	end
+	if mc == 13*128 then     -- BCMjump
+		c = pc+d-0x7fff
+	elseif mc == 9*128 then  -- BCMint
+		c = jutil.funck(func, d)
+	elseif mc == 10*128 then -- BCMstr
+		c = jutil.funck(func, -d-1)
+	elseif mc == 5*128 then  -- BCMuv
+	    c = jutil.funcuvname(func, d)
+	end
+	return pc, op, a, b, c, d
+end
+
+-- Decoder closure
+local function decoder(func)
+	local pc = 0
+	return function ()
+		pc = pc + 1
+		return decode_ins(func, pc)
+	end
+end
+
+-- Hexdump generated code
+local function dump(func)
+	return require('jit.bc').dump(func)
+end
+
+return {
+	decode = decode_ins,
+	decoder = decoder,
+	dump = dump,
+	funcinfo = function (...) return jutil.funcinfo(...) end,
+}
