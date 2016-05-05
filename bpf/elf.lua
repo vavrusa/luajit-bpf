@@ -141,6 +141,27 @@ local SHT = { NULL=0, PROGBITS=1, SYMTAB=2, STRTAB=3, RELA=4, HASH=5, DYNAMIC=6,
 local ELF_C = ffi.new('struct Elf_Cmd')
 local M = {}
 
+-- Optional poor man's C++ demangler
+local cpp_demangler = os.getenv('CPP_DEMANGLER')
+if not cpp_demangler then
+	for prefix in string.gmatch(os.getenv('PATH'), '[^;:]+') do
+		if S.statfs(prefix..'/c++filt') then
+			cpp_demangler = prefix..'/c++filt'
+			break
+		end
+	end
+end
+local cpp_demangle = function (name) return name end
+if cpp_demangler then
+	cpp_demangle = function (name)
+		local cmd = string.format('%s -p %s', cpp_demangler, name)
+		local fp = assert(io.popen(cmd, 'r'))
+		local output = fp:read('*all')
+		fp:close()
+		return output:match '^(.-)%s*$'
+	end
+end
+
 -- Metatable for ELF object
 ffi.metatype('struct Elf_object', {
 	__gc = function (t) t:close() end,
@@ -167,7 +188,7 @@ ffi.metatype('struct Elf_object', {
 			end
 		end,
 		-- Resolve symbol address
-		resolve = function (t, k)
+		resolve = function (t, k, pattern)
 			local section = elf.elf_nextscn(t.elf, nil)
 			while section ~= nil do
 				local header = ffi.new('GElf_Shdr [1]')
@@ -184,7 +205,13 @@ ffi.metatype('struct Elf_object', {
 								if elf.gelf_getsym(data, i, sym) ~= nil then
 									local name = elf.elf_strptr(t.elf, header[0].sh_link, sym[0].st_name)
 									if name ~= nil then
-										if k == ffi.string(name) then
+										-- Demangle C++ symbols if necessary
+										name = ffi.string(name)
+										if name:sub(1,2) == '_Z' then
+											name = cpp_demangle(name)
+										end
+										-- Match symbol name against pattern
+										if pattern and string.match(name, k) or k == name then
 											return sym[0]	
 										end
 									end
