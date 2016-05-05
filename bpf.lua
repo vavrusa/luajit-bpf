@@ -321,11 +321,40 @@ local function LOAD(dst, src, off, vtype)
 	V[dst].const = nil -- Dissected value is not constant anymore
 end
 
+local function CMP_STR(a, b, op)
+	assert(op == 'JEQ' or op == 'JNE', 'NYI: only equivallence stack/string only supports == or ~=')
+	-- I have no better idea how to implement it than unrolled XOR loop, as we can fixup only one JMP
+	-- So: X(a,b) = a[0] ^ b[0] | a[1] ^ b[1] | ...
+	--     EQ(a,b) <=> X == 0
+	-- This could be optimised by placing early exits by rewriter in second phase for long strings
+	local base, size = V[a].const.__base, math.min(#b, ffi.sizeof(V[a].type))
+	local acc, tmp = reg_alloc(stackslots, 0), reg_alloc(stackslots+1, 1)
+	local sp = 0
+	emit(BPF.ALU64 + BPF.MOV + BPF.K, acc, 0, 0, 0)
+	while sp < size do
+		-- Load string chunk as imm32
+		local as_u32 = ffi.new('uint32_t [1]')
+		local sub = b:sub(sp+1, sp+ffi.sizeof(as_u32))
+		ffi.copy(as_u32, sub, #sub)
+		-- TODO: make this faster by interleaved load/compare steps with DW length
+		emit(BPF.MEM + BPF.LDX + BPF.W, tmp, 10, -(base-sp), 0)
+		emit(BPF.ALU64 + BPF.XOR + BPF.K, tmp, 0, 0, as_u32[0])
+		emit(BPF.ALU64 + BPF.OR + BPF.X, acc, tmp, 0, 0)
+		sp = sp + ffi.sizeof(as_u32)
+	end
+	emit(BPF.JMP + BPF[op] + BPF.K, acc, 0, 0xffff, 0)
+	code.seen_cmp = code.pc-1
+end
+
 local function CMP_REG(a, b, op)
 	-- Fold compile-time expressions
 	if V[a].const and V[b].const and not (is_proxy(V[a].const) or is_proxy(V[b].const)) then
 		code.seen_cmp = const_expr[op](V[a].const, V[b].const) and ALWAYS or NEVER
 	else
+		-- Comparison against compile-time string or stack memory
+		if V[b].const and type(V[b].const) == 'string' then
+			return CMP_STR(a, V[b].const, op)
+		end
 		-- The 0xFFFF target here has no significance, it's just a placeholder for
 		-- compiler to replace it's absolute offset to LJ bytecode insn with a relative
 		-- offset in BPF program code, verifier will accept only programs with valid JMP targets
@@ -344,6 +373,9 @@ local function CMP_IMM(a, b, op)
 		-- Convert imm32 to number
 		if type(b) == 'string' then
 			if     #b == 1 then b = b:byte()
+			elseif cdef.isptr(V[a].type) then
+				-- String comparison between stack/constant string
+				return CMP_STR(a, b, op)
 			elseif #b <= 4 then
 				-- Convert to u32 with network byte order
 				local imm = ffi.new('uint32_t[1]')
@@ -563,6 +595,7 @@ local BC = {
 	[0x09] = function(a, _, c, _) return CMP_IMM(a, c, 'JNE') end, -- (a ~= c)
 	[0x0e] = function(_, _, _, d) return CMP_IMM(d, 0, 'JNE') end, -- (d)
 	[0x0f] = function(_, _, _, d) return CMP_IMM(d, 0, 'JEQ') end, -- (not d)
+	[0x0a] = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- ISEQP (a == c)
 	-- Binary operations with RHS constants
 	[0x16] = function(a, b, c, _) return ALU_IMM(a, b, c, 'ADD') end,
 	[0x17] = function(a, b, c, _) return ALU_IMM(a, b, c, 'SUB') end,
@@ -581,6 +614,13 @@ local BC = {
 	[0x22] = function(a, b, _, d) return ALU_REG(a, b, d, 'MUL') end,
 	[0x23] = function(a, b, _, d) return ALU_REG(a, b, d, 'DIV') end,
 	[0x24] = function(a, b, _, d) return ALU_REG(a, b, d, 'MOD') end,
+	-- Strings
+	[0x26] = function(a, b, _, d) -- CAT A = B ~ D
+		assert(V[b].const and V[d].const, 'NYI: CAT only works on compile-time expressions')
+		assert(type(V[b].const) == 'string' and type(V[d].const) == 'string',
+			'NYI: CAT only works on compile-time strings')
+		vset(a, nil, V[b].const .. V[d].const)
+	end,
 	-- Tables
 	[0x36] = function (a, _, c, _) -- GGET (A = GLOBAL[c])
 		if env[c] ~= nil then
