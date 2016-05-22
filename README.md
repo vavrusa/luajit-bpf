@@ -1,7 +1,5 @@
 # LuaJIT to extended BPF compiler
 
-*Disclaimer: this is still work-in-progress, see "Current state"*
-
 Why? BPF allows you to execute a small sandboxed programs directly in kernel, that can talk back to userspace over shared maps. Since the programs are small and verified, they are guaranteed not to crash or lock the kernel. That's fantastic not only as a performance introspection tool with tracepoints and probes, but also for low-latency packet filtering, load-balancing, IPS and a ton of other purposes.
 
 However, it's not dead simple to use as Brendan Greggs puts it:
@@ -62,6 +60,8 @@ copied.
 
 ## Installation
 
+*Not yet in LuaRocks as it depends on untagged ljsyscall which isn't in the LuaRocks yet.*
+
 ```bash
 $ luarocks install luajit-bpf
 ```
@@ -93,7 +93,7 @@ Below is a list of BPF-specific helpers:
 
 * Not all LuaJIT bytecode opcodes are supported *(notable mentions below)*
 * Closures `UCLO` will probably never be supported, although you can use upvalues inside compiled function.
-* Type narrowing is opportunistic and sticky from right to left (thus `u8 <- u64 + u8`); numbers are 64-bit by default, but 64-bit immediate loads are not supported (e.g. `local x = map[ffi.cast('uint64_t', 1000)]`)
+* Type narrowing is opportunistic. Numbers are 64-bit by default, but 64-bit immediate loads are not supported (e.g. `local x = map[ffi.cast('uint64_t', 1000)]`)
 * Tail calls `CALLT`, and iterators `ITERI` are NYI (as of now)
 * Arbitrary ctype **is** supported both for map keys and values
 * Basic optimisations like: constant propagation, partial DCE, liveness analysis and speculative register allocation are implement, but there's no control flow analysis yet. This means the compiler has the visibility when things are used and dead-stores occur, but there's no rewriter pass to eliminate them.
