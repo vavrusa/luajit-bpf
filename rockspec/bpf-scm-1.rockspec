@@ -1,18 +1,18 @@
-package = "luajit-bpf"
+package = "bpf"
 version = "scm-1"
 source = {
-   url = "https://github.com/vavrusa/luajit-bpf.git"
+   url = "git+https://github.com/vavrusa/luajit-bpf.git"
 }
 description = {
    summary = "A LuaJIT to BPF compiler.",
    detailed = [[
    ]],
-   homepage = "https://gitlab.com/vavrusa/luajit-bpf",
+   homepage = "https://github.com/vavrusa/luajit-bpf",
    license = "BSD"
 }
 dependencies = {
    "lua >= 5.1",
-   "ljsyscall > 0.11-1",
+   "ljsyscall >= 0.12",
 }
 external_dependencies = {
     LIBELF = {

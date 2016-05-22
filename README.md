@@ -60,10 +60,8 @@ copied.
 
 ## Installation
 
-*Not yet in LuaRocks as it depends on untagged ljsyscall which isn't in the LuaRocks yet.*
-
 ```bash
-$ luarocks install luajit-bpf
+$ luarocks install bpf
 ```
 
 ## Examples
