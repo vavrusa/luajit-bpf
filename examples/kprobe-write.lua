@@ -12,7 +12,7 @@ local probe = assert(bpf.kprobe('myprobe:sys_write', bpf(function (ptregs)
 end), true))
 -- User-space part of the program
 pcall(function()
-	for i=1,10 do
+	for _ = 1, 10 do
 	   print('hits: ', tonumber(map[0]))
 	   S.sleep(1)
 	end

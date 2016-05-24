@@ -194,7 +194,7 @@ ffi.metatype('struct Elf_object', {
 				local header = ffi.new('GElf_Shdr [1]')
 				if elf.gelf_getshdr(section, header) ~= nil then
 					if header[0].sh_type == SHT.SYMTAB or header[0].sh_type == SHT.DYNSYM then
-						local data = elf.elf_getdata(section, data)
+						local data = elf.elf_getdata(section, nil)
 						while data ~= nil do
 							if data.d_size % header[0].sh_entsize > 0 then
 								return nil, 'bad section header entity size'

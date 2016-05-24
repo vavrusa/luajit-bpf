@@ -14,7 +14,7 @@ bpf.socket('lo', bpf(function ()
    xadd(map[proto], 1)         -- Atomic `map[proto] += 1`
 end))
 -- User-space part of the program
-for i=1,10 do
+for _ = 1, 10 do
    local icmp, udp, tcp = map[1], map[17], map[6]
    print(string.format('TCP %d UDP %d ICMP %d packets',
    	     tonumber(tcp or 0), tonumber(udp or 0), tonumber(icmp or 0)))

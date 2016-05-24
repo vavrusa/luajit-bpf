@@ -191,7 +191,7 @@ builtins[math.log2] = function (e, dst, x)
 	e.vcopy(e.tmpvar, x)
 	local v = e.vreg(e.tmpvar, 2)
 	if cdef.isptr(e.V[x].const) then -- No pointer arithmetics, dereference
-		e.vderef(n, n, ffi.typeof('uint64_t'))
+		e.vderef(v, v, ffi.typeof('uint64_t'))
 	end
 	-- Invert value to invert all tests, otherwise we would need and+jnz
 	e.emit(BPF.ALU64 + BPF.NEG + BPF.K, v, 0, 0, 0)        -- v = ~v

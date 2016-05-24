@@ -29,7 +29,7 @@ local prog = bpf.socket('lo', bpf(function (skb)
 	end
 end))
 -- User-space part of the program
-for i=1,10 do
+for _ = 1, 10 do
 	for k,v in map.pairs,map,0 do
 		v = tonumber(v)
 		if v > 0 then

@@ -190,8 +190,7 @@ M.dissector = dissector
 local function next_offset(e, var, type, off, mask, shift)
 	local d = e.V[var].const
 	-- Materialize relative offset value in R0
-	local dst_reg = e.V[var].reg
-	local tmp_reg = nil
+	local dst_reg, tmp_reg
 	if d.off then
 		dst_reg = e.vreg(var, 0, true)
 		tmp_reg = dst_reg -- Use target register to avoid copy
@@ -234,6 +233,12 @@ local function next_skip(e, var, off)
 	end
 end
 
+local function skip_eth(e, dst)
+	-- IP starts right after ETH header (fixed size)
+	local d = e.V[dst].const
+	d.off = d.off + ffi.sizeof('struct eth_t')
+end
+
 -- Export types
 M.pkt     = {off=0, __dissector=ffi.typeof('struct eth_t')}
 M.skb     = {rel=true, __dissector=ffi.typeof('struct sk_buff')}
@@ -254,12 +259,8 @@ M.data    = function (...) return dissector(ffi.typeof('uint8_t'), ...) end
 -- Metatables
 ffi.metatype(ffi.typeof('struct eth_t'), {
 	__index = {
-		ip = function(e, dst)
-			-- IP starts right after ETH header (fixed size)
-			local d = e.V[dst].const
-			d.off = d.off + ffi.sizeof('struct eth_t')
-		end,
-		ip6 = ip,
+		ip = skip_eth,
+		ip6 = skip_eth,
 	}
 })
 

@@ -1,0 +1,34 @@
+language: python
+sudo: false
+
+env:
+  matrix:
+    - LUA="luajit @"
+    - LUA="luajit 2.0"
+    - LUA="luajit 2.1"
+
+branches:
+  only:
+    - master
+
+before_install:
+  - pip install hererocks
+  - hererocks ~/hererocks -r^ --$LUA
+  - export PATH=$PATH:~/hererocks/bin
+  - eval `luarocks path --bin`
+  - luarocks install luacheck
+
+install:
+  - luarocks install --only-deps rockspec/bpf-scm-1.rockspec
+
+script:
+  - luacheck .
+
+notifications:
+  email:
+    on_success: change
+    on_failure: change
+
+cache:
+  directories:
+    - $HOME/.cache/hererocks

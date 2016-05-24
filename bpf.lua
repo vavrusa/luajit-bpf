@@ -120,10 +120,8 @@ end
 local function reg_alloc(var, reg)
 	-- Specific register requested, must spill/move existing variable
 	if reg then
-		local spill = nil
 		for k,v in pairs(V) do -- Spill any variable that has this register
 			if v.reg == reg and not v.shadow then
-				spill = k
 				reg_spill(k)
 				break
 			end
@@ -418,7 +416,7 @@ local function ALU_REG(dst, a, b, op)
 		assert(type(V[b].const) == 'number', 'VAR '..b..' must be numeric')
 		if type(op) == 'string' then op = const_expr[op] end
 		vcopy(dst, a)
-		V[dst].const = func(V[a].const, V[b].const)
+		V[dst].const = op(V[a].const, V[b].const)
 	else
 		local src_reg = b and vreg(b) or 0 -- SRC is optional for unary operations
 		if b and cdef.isptr(V[b].type) then
@@ -738,7 +736,7 @@ local BC = {
 	end,
 	[0x58] = function (a, _, c, d) -- JMP
 		-- Discard unused slots after jump
-		for i,v in pairs(V) do
+		for i, _ in pairs(V) do
 			if i >= a then V[i] = {} end
 		end
 		local val = code.fixup[c] or {}
@@ -788,7 +786,7 @@ local BC = {
 		if V[a].reg ~= 0 then vreg(a, 0) end
 		emit(BPF.JMP + BPF.EXIT, 0, 0, 0, 0)
 		-- Free optimisation: spilled variable will not be filled again
-		for k,v in pairs(V) do if v.reg == 0 then v.reg = nil end end
+		for _,v in pairs(V) do if v.reg == 0 then v.reg = nil end end
 		code.reachable = false
 	end,
 	[0x4b] = function (_, _, _, _) -- RET0
@@ -828,7 +826,7 @@ return setmetatable(BC, {
 		local fixup = code.fixup[code.bc_pc]
 		if fixup ~= nil then
 			-- Patch JMP source insn with relative offset
-			for i,pc in ipairs(fixup) do
+			for _,pc in ipairs(fixup) do
 				code.insn[pc].off = code.pc - 1 - pc
 			end
 			code.fixup[code.bc_pc] = nil
@@ -893,10 +891,10 @@ local bpf_map_mt = {
 		if type(k) == 'string' then
 			-- Return iterator
 			if k == 'pairs' then
-				return function(t, k)
+				return function(t, key)
 					-- Get next key
 					local next_key = ffi.new(ffi.typeof(t.key))
-					t.key[0] = k or 0
+					t.key[0] = key or 0
 					local ok, err = S.bpf_map_op(c.BPF_CMD.MAP_GET_NEXT_KEY, map.fd, map.key, next_key)
 					if not ok then return nil end
 					-- Get next value
@@ -1054,7 +1052,7 @@ return setmetatable({
 			i = i + 1
 		end
 		setmetatable(env, {
-			__index = function (t, k)
+			__index = function (_, k)
 				return proto[k] or builtins[k] or _G[k]
 			end
 		})
@@ -1066,7 +1064,7 @@ return setmetatable({
 		local on_err = function (e)
 				local funci = bytecode.funcinfo(prog, pc)
 				local from, to = 0, 0
-				for i=1,funci.currentline do
+				for _ = 1, funci.currentline do
 					from = to
 					to = string.find(funci.source, '\n', from+1, true) or 0
 				end
@@ -1074,7 +1072,7 @@ return setmetatable({
 				print('error: '..e)
 				print(debug.traceback())
 		end
-		for pc,op,a,b,c,d in bytecode.decoder(prog) do
+		for _,op,a,b,c,d in bytecode.decoder(prog) do
 			local ok, res, err = xpcall(E,on_err,op,a,b,c,d)
 			if not ok then
 				return nil

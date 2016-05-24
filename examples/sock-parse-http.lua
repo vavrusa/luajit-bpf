@@ -31,7 +31,7 @@ end)
 bpf.dump(prog)
 bpf.socket('lo', prog)
 -- User-space part of the program
-for i=1,10 do
+for _ = 1, 10 do
 	local strkey = ffi.new('uint32_t [1]')
 	local s = ''
 	for k,v in map.pairs,map,0 do
