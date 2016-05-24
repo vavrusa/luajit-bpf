@@ -1,0 +1,6 @@
+return {
+	default = {
+		lpath = "./?.lua",
+		["auto-insulate"] = false,
+	}
+}

@@ -17,12 +17,18 @@ before_install:
   - export PATH=$PATH:~/hererocks/bin
   - eval `luarocks path --bin`
   - luarocks install luacheck
+  - luarocks install luacov-coveralls
+  - luarocks install busted
 
 install:
   - luarocks install --only-deps rockspec/bpf-scm-1.rockspec
 
 script:
   - luacheck .
+  - busted -c
+
+after_success:
+  - luacov-coveralls -v
 
 notifications:
   email:

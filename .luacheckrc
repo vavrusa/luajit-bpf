@@ -6,3 +6,6 @@ files["examples"] = {
 files["bpf/builtins.lua"] = {
 	ignore = { "122" }
 }
+files["spec"] = {
+	std = "+busted",
+}
