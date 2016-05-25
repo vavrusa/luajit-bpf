@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/vavrusa/luajit-bpf.svg?branch=master)](https://travis-ci.org/vavrusa/luajit-bpf)
+
 # LuaJIT to extended BPF compiler
 
 Why? BPF allows you to execute a small sandboxed programs directly in kernel, that can talk back to userspace over shared maps. Since the programs are small and verified, they are guaranteed not to crash or lock the kernel. That's fantastic not only as a performance introspection tool with tracepoints and probes, but also for low-latency packet filtering, load-balancing, IPS and a ton of other purposes.

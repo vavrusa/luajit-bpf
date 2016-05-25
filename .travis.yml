@@ -6,6 +6,8 @@ env:
     - LUA="luajit @"
     - LUA="luajit 2.0"
     - LUA="luajit 2.1"
+  global:
+    - LD_LIBRARY_PATH="$HOME/.local/lib"
 
 branches:
   only:
@@ -18,7 +20,9 @@ before_install:
   - eval `luarocks path --bin`
   - luarocks install luacheck
   - luarocks install luacov-coveralls
-  - luarocks install busted
+  - luarocks install lua_cliargs 2.5-5
+  - luarocks install busted 2.0.rc10-0
+  - ./.ci.sh
 
 install:
   - luarocks install --only-deps rockspec/bpf-scm-1.rockspec
@@ -38,3 +42,4 @@ notifications:
 cache:
   directories:
     - $HOME/.cache/hererocks
+    - $HOME/.local
