@@ -566,71 +566,72 @@ end
 -- Finally - this table translates LuaJIT bytecode into code emitter actions.
 local BC = {
 	-- Constants
-	[0x29] = function(a, _, _, d) -- KSHORT
+	KSHORT = function(a, _, _, d) -- KSHORT
 		vset(a, nil, d, ffi.typeof('int16_t'))
 	end,
-	[0x2b] = function(a, _, _, d) -- KPRI
+	KPRI = function(a, _, _, d) -- KPRI
 		vset(a, nil, (d < 2) and 0 or 1, ffi.typeof('uint8_t'))
 	end,
-	[0x27] = function(a, _, c, _) -- KSTR
+	KSTR = function(a, _, c, _) -- KSTR
 		vset(a, nil, c, ffi.typeof('const char[?]'))
 	end,
-	[0x12] = function(a, _, _, d) -- MOV var, var
+	MOV = function(a, _, _, d) -- MOV var, var
 		vcopy(a, d)
 	end,
+
 	-- Comparison ops
 	-- Note: comparisons are always followed by JMP opcode, that
 	--       will fuse following JMP to JMP+CMP instruction in BPF
 	-- Note:  we're narrowed to integers, so operand/operator inversion is legit
-	[0x00] = function(a, _, _, d) return CMP_REG(d, a, 'JGE') end, -- (a < d) (inverted)
-	[0x01] = function(a, _, _, d) return CMP_REG(a, d, 'JGE') end, -- (a >= d)
-	[0x03] = function(a, _, _, d) return CMP_REG(a, d, 'JGT') end, -- (a > d)
-	[0x04] = function(a, _, _, d) return CMP_REG(a, d, 'JEQ') end, -- (a == d)
-	[0x05] = function(a, _, _, d) return CMP_REG(a, d, 'JNE') end, -- (a ~= d)
-	[0x06] = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- (a == str(c))
-	[0x07] = function(a, _, c, _) return CMP_IMM(a, c, 'JNE') end, -- (a ~= str(c))
-	[0x08] = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- (a == c)
-	[0x09] = function(a, _, c, _) return CMP_IMM(a, c, 'JNE') end, -- (a ~= c)
-	[0x0e] = function(_, _, _, d) return CMP_IMM(d, 0, 'JNE') end, -- (d)
-	[0x0f] = function(_, _, _, d) return CMP_IMM(d, 0, 'JEQ') end, -- (not d)
-	[0x0a] = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- ISEQP (a == c)
+	ISLT = function(a, _, _, d) return CMP_REG(d, a, 'JGE') end, -- (a < d) (inverted)
+	ISGE = function(a, _, _, d) return CMP_REG(a, d, 'JGE') end, -- (a >= d)
+	ISGT = function(a, _, _, d) return CMP_REG(a, d, 'JGT') end, -- (a > d)
+	ISEQV = function(a, _, _, d) return CMP_REG(a, d, 'JEQ') end, -- (a == d)
+	ISNEV = function(a, _, _, d) return CMP_REG(a, d, 'JNE') end, -- (a ~= d)
+	ISEQS = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- (a == str(c))
+	ISNES = function(a, _, c, _) return CMP_IMM(a, c, 'JNE') end, -- (a ~= str(c))
+	ISEQN = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- (a == c)
+	ISNEN = function(a, _, c, _) return CMP_IMM(a, c, 'JNE') end, -- (a ~= c)
+	IST = function(_, _, _, d) return CMP_IMM(d, 0, 'JNE') end, -- (d)
+	ISF = function(_, _, _, d) return CMP_IMM(d, 0, 'JEQ') end, -- (not d)
+	ISEQP = function(a, _, c, _) return CMP_IMM(a, c, 'JEQ') end, -- ISEQP (a == c)
 	-- Binary operations with RHS constants
-	[0x16] = function(a, b, c, _) return ALU_IMM(a, b, c, 'ADD') end,
-	[0x17] = function(a, b, c, _) return ALU_IMM(a, b, c, 'SUB') end,
-	[0x18] = function(a, b, c, _) return ALU_IMM(a, b, c, 'MUL') end,
-	[0x19] = function(a, b, c, _) return ALU_IMM(a, b, c, 'DIV') end,
-	[0x1a] = function(a, b, c, _) return ALU_IMM(a, b, c, 'MOD') end,
+	ADDVN = function(a, b, c, _) return ALU_IMM(a, b, c, 'ADD') end,
+	SUBVN = function(a, b, c, _) return ALU_IMM(a, b, c, 'SUB') end,
+	MULVN = function(a, b, c, _) return ALU_IMM(a, b, c, 'MUL') end,
+	DIVVN = function(a, b, c, _) return ALU_IMM(a, b, c, 'DIV') end,
+	MODVN = function(a, b, c, _) return ALU_IMM(a, b, c, 'MOD') end,
 	-- Binary operations with LHS constants
 	-- Cheat code: we're narrowed to integer arithmetic, so MUL+ADD are commutative
-	[0x1b] = function(a, b, c, _) return ALU_IMM(a, b, c, 'ADD') end, -- ADDNV
-	[0x1d] = function(a, b, c, _) return ALU_IMM(a, b, c, 'MUL') end, -- MULNV
-	[0x1c] = function(a, b, c, _) return ALU_IMM_NV(a, c, b, 'SUB') end, -- SUBNV
-	[0x1e] = function(a, b, c, _) return ALU_IMM_NV(a, c, b, 'DIV') end, -- DIVNV
+	ADDNV = function(a, b, c, _) return ALU_IMM(a, b, c, 'ADD') end, -- ADDNV
+	MULNV = function(a, b, c, _) return ALU_IMM(a, b, c, 'MUL') end, -- MULNV
+	SUBNV = function(a, b, c, _) return ALU_IMM_NV(a, c, b, 'SUB') end, -- SUBNV
+	DIVNV = function(a, b, c, _) return ALU_IMM_NV(a, c, b, 'DIV') end, -- DIVNV
 	-- Binary operations between registers
-	[0x20] = function(a, b, _, d) return ALU_REG(a, b, d, 'ADD') end,
-	[0x21] = function(a, b, _, d) return ALU_REG(a, b, d, 'SUB') end,
-	[0x22] = function(a, b, _, d) return ALU_REG(a, b, d, 'MUL') end,
-	[0x23] = function(a, b, _, d) return ALU_REG(a, b, d, 'DIV') end,
-	[0x24] = function(a, b, _, d) return ALU_REG(a, b, d, 'MOD') end,
+	ADDVV = function(a, b, _, d) return ALU_REG(a, b, d, 'ADD') end,
+	SUBVV = function(a, b, _, d) return ALU_REG(a, b, d, 'SUB') end,
+	MULVV = function(a, b, _, d) return ALU_REG(a, b, d, 'MUL') end,
+	DIVVV = function(a, b, _, d) return ALU_REG(a, b, d, 'DIV') end,
+	MODVV = function(a, b, _, d) return ALU_REG(a, b, d, 'MOD') end,
 	-- Strings
-	[0x26] = function(a, b, _, d) -- CAT A = B ~ D
+	CAT = function(a, b, _, d) -- CAT A = B ~ D
 		assert(V[b].const and V[d].const, 'NYI: CAT only works on compile-time expressions')
 		assert(type(V[b].const) == 'string' and type(V[d].const) == 'string',
 			'NYI: CAT only works on compile-time strings')
 		vset(a, nil, V[b].const .. V[d].const)
 	end,
 	-- Tables
-	[0x36] = function (a, _, c, _) -- GGET (A = GLOBAL[c])
+	GGET = function (a, _, c, _) -- GGET (A = GLOBAL[c])
 		if env[c] ~= nil then
 			vset(a, nil, env[c])
 		else error(string.format("undefined global '%s'", c)) end
 	end,
-	[0x2d] = function (a, _, c, _) -- UGET (A = UPVALUE[c])
+	UGET = function (a, _, c, _) -- UGET (A = UPVALUE[c])
 		if env[c] ~= nil then
 			vset(a, nil, env[c])
 		else error(string.format("undefined upvalue '%s'", c)) end
 	end,
-	[0x3a] = function (a, b, _, d) -- TGETB (A = B[D])
+	TGETB = function (a, b, _, d) -- TGETB (A = B[D])
 		if not V[a] then vset(a) end
 		local base = V[b].const
 		if base.__map then -- BPF map read (constant)
@@ -639,7 +640,7 @@ local BC = {
 			LOAD(a, b, d, ffi.typeof('uint8_t'))
 		end
 	end,
-	[0x3e] = function (a, b, _, d) -- TSETB (B[D] = A)
+	TSETB = function (a, b, _, d) -- TSETB (B[D] = A)
 		if V[b].const.__map then -- BPF map read (constant)
 			return MAP_SET(b, nil, d, a) -- D is literal
 		elseif V[b].const and V[b].const and V[a].const then
@@ -647,7 +648,7 @@ local BC = {
 		else error('NYI: B[D] = A, where B is not Lua table or BPF map')
 		end
 	end,
-	[0x3c] = function (a, b, _, d) -- TSETV (B[D] = A)
+	TSETV = function (a, b, _, d) -- TSETV (B[D] = A)
 		if V[b].const.__map then -- BPF map read (constant)
 			return MAP_SET(b, d, nil, a) -- D is literal
 		elseif V[b].const and V[d].const and V[a].const then
@@ -655,7 +656,7 @@ local BC = {
 		else error('NYI: B[D] = A, where B is not Lua table or BPF map')
 		end
 	end,
-	[0x3d] = function (a, b, c, _) -- TSETS (B[C] = A)
+	TSETS = function (a, b, c, _) -- TSETS (B[C] = A)
 		assert(V[b] and V[b].const, 'NYI: B[D] where B is not Lua table or BPF map')
 		local base = V[b].const
 		if base.__dissector then
@@ -671,7 +672,7 @@ local BC = {
 		else error('NYI: B[C] = A, where B is not Lua table or BPF map')
 		end
 	end,
-	[0x38] = function (a, b, _, d) -- TGETV (A = B[D])
+	TGETV = function (a, b, _, d) -- TGETV (A = B[D])
 		assert(V[b] and V[b].const, 'NYI: B[D] where B is not Lua table or BPF map')
 		if V[b].const.__map then -- BPF map read
 			MAP_GET(a, b, d)
@@ -679,7 +680,7 @@ local BC = {
 			LD_FIELD(a, d, 1, V[d].const)
 		else V[a].const = V[b].const[V[d].const] end
 	end,
-	[0x39] = function (a, b, c, _) -- TGETS (A = B[C])
+	TGETS = function (a, b, c, _) -- TGETS (A = B[C])
 		assert(V[b] and V[b].const, 'NYI: B[C] where C is string and B not Lua table or BPF map')
 		local base = V[b].const
 		if base.__dissector then
@@ -727,14 +728,14 @@ local BC = {
 		else V[a].const = base[c] end
 	end,
 	-- Loops and branches
-	[0x41] = function (a, b, _, d) -- A = A(A+1, ..., A+D+MULTRES)
+	CALLM = function (a, b, _, d) -- A = A(A+1, ..., A+D+MULTRES)
 		-- NYI: Support single result only
 		CALL(a, b, d+2)
 	end,
-	[0x42] = function (a, b, _, d) -- A = A(A+1, ..., A+D-1)
+	CALL = function (a, b, _, d) -- A = A(A+1, ..., A+D-1)
 		CALL(a, b, d)
 	end,
-	[0x58] = function (a, _, c, d) -- JMP
+	JMP = function (a, _, c, d) -- JMP
 		-- Discard unused slots after jump
 		for i, _ in pairs(V) do
 			if i >= a then V[i] = {} end
@@ -782,14 +783,14 @@ local BC = {
 			code.fixup[c] = val
 		end
 	end,
-	[0x4c] = function (a, _, _, _) -- RET1
+	RET1 = function (a, _, _, _) -- RET1
 		if V[a].reg ~= 0 then vreg(a, 0) end
 		emit(BPF.JMP + BPF.EXIT, 0, 0, 0, 0)
 		-- Free optimisation: spilled variable will not be filled again
 		for _,v in pairs(V) do if v.reg == 0 then v.reg = nil end end
 		code.reachable = false
 	end,
-	[0x4b] = function (_, _, _, _) -- RET0
+	RET0 = function (_, _, _, _) -- RET0
 		emit(BPF.ALU64 + BPF.MOV + BPF.K, 0, 0, 0, 0)
 		emit(BPF.JMP + BPF.EXIT, 0, 0, 0, 0)
 		code.reachable = false
@@ -925,7 +926,7 @@ local bpf_map_mt = {
 local function trace_check_enabled(path)
 	path = path or '/sys/kernel/debug/tracing'
 	if S.statfs(path) then return true end
-	return nil, 'debugfs not enabled: "mount -t debugfs nodev /sys/kernel/debug" ?'
+	return nil, 'debugfs not accessible: "mount -t debugfs nodev /sys/kernel/debug"? missing sudo?'
 end
 
 local function trace_bpf(tp, ptype, pname, pdef, retprobe, prog, pid, cpu, group_fd)

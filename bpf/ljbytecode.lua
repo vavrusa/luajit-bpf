@@ -1,4 +1,5 @@
 local jutil = require("jit.util")
+local vmdef = require("jit.vmdef")
 local bit = require('bit')
 local shr, band = bit.rshift, bit.band
 
@@ -28,6 +29,9 @@ local function decode_ins(func, pc)
 	elseif mc == 5*128 then  -- BCMuv
 	    c = jutil.funcuvname(func, d)
 	end
+	-- Convert version-specific opcode to string
+	op = 6*op
+	op = string.sub(vmdef.bcnames, op+1, op+6):match('[^%s]+')
 	return pc, op, a, b, c, d
 end
 

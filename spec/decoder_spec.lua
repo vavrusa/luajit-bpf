@@ -14,7 +14,7 @@ describe('decoder', function()
 		local pc, op = bc()
 		-- Check bytecode for sanity (starts with ADDVN(x, 1))
 		assert.equal(pc, 1)
-		assert.equal(op, 0x16)
+		assert.equal(op, 'ADDVN')
 		for pc, op in bc do
 			assert.truthy(pc and op)
 		end
