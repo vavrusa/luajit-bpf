@@ -86,12 +86,13 @@ builtins[ffi.cast] = function (e, dst, ct, x)
 		e.V[dst].const.__dissector = ffi.typeof(e.V[ct].const)
 	end
 	-- Specific types also encode source of the data
+	-- This is because BPF has different helpers for reading
+	-- different data sources, so variables must track origins.
 	-- struct pt_regs - source of the data is probe
 	-- struct skb     - source of the data is socket buffer
 	if ffi.typeof(e.V[ct].const) == ffi.typeof('struct pt_regs') then
 		e.V[dst].source = ffi.typeof('struct pt_regs')
 	end
-
 end
 builtins[ffi.new] = function (e, dst, ct, x)
 	ct = ffi.typeof(e.V[ct].const) -- Get ctype
@@ -178,6 +179,39 @@ builtins[print] = function (e, ret, fmt, a1, a2, a3)
 	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.trace_printk)
 	e.V[e.tmpvar].reg = nil  -- Free temporary registers
 end
+
+-- Implements bpf_perf_event_output(ctx, map, flags, var, vlen) on perf event map
+local function perf_submit(e, dst, map_var, src)
+	-- Set R2 = map fd (indirect load)
+	local map = e.V[map_var].const
+	e.vcopy(e.tmpvar, map_var)
+	e.vreg(e.tmpvar, 2, true, ffi.typeof('uint64_t'))
+	e.LD_IMM_X(2, BPF.PSEUDO_MAP_FD, map.fd, ffi.sizeof('uint64_t'))
+	-- Set R1 = ctx
+	e.reg_alloc(e.tmpvar, 1) -- Spill anything in R1 (unnamed tmp variable)
+	e.emit(BPF.ALU64 + BPF.MOV + BPF.X, 1, 6, 0, 0) -- CTX is always in R6, copy
+	-- Set R3 = flags
+	e.vset(e.tmpvar, nil, 0) -- BPF_F_CURRENT_CPU
+	e.vreg(e.tmpvar, 3, false, ffi.typeof('uint64_t'))
+	-- Set R4 = pointer to src on stack
+	assert(e.V[src].const.__base, 'NYI: submit(map, var) - variable is not on stack')
+	e.emit(BPF.ALU64 + BPF.MOV + BPF.X, 4, 10, 0, 0)
+	e.emit(BPF.ALU64 + BPF.ADD + BPF.K, 4, 0, 0, -e.V[src].const.__base)
+	-- Set R5 = src length
+	e.emit(BPF.ALU64 + BPF.MOV + BPF.K, 5, 0, 0, ffi.sizeof(e.V[src].type))
+	-- Set R0 = ret and call
+	e.vreg(dst, 0, true, ffi.typeof('int32_t')) -- Return is integer
+	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.perf_event_output)
+	e.V[e.tmpvar].reg = nil  -- Free temporary registers
+end
+
+-- table.insert(table, value) keeps semantics with the exception of BPF maps
+-- map `perf_event` -> submit inserted value
+builtins[table.insert] = function (e, dst, map_var, value)
+	assert(e.V[map_var].const.__map, 'NYI: table.insert() supported only on BPF maps')
+	return perf_submit(e, dst, map_var, value)
+end
+
 -- Math library built-ins
 math.log2 = function (x) error('NYI') end
 builtins[math.log2] = function (e, dst, x)

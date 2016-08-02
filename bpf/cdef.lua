@@ -130,4 +130,19 @@ function M.isptr(v, noarray)
 	return ctname
 end
 
+function M.osversion()
+	-- We have no better way to extract current kernel hex-string other
+	-- than parsing headers, compiling a helper function or reading /proc
+	local ver_str, count = S.sysctl('kernel.version'):match('%d+.%d+.%d+'), 2
+	if not ver_str then -- kernel.version is freeform, fallback to kernel.osrelease
+		ver_str = S.sysctl('kernel.osrelease'):match('%d+.%d+.%d+')
+	end
+	version = 0
+	for i in ver_str:gmatch('%d+') do -- Convert 'X.Y.Z' to 0xXXYYZZ
+		version = bit.bor(version, bit.lshift(tonumber(i), 8*count))
+		count = count - 1
+	end
+	return version
+end
+
 return M

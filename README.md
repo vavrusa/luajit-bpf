@@ -98,7 +98,6 @@ Below is a list of BPF-specific helpers:
 * Arbitrary ctype **is** supported both for map keys and values
 * Basic optimisations like: constant propagation, partial DCE, liveness analysis and speculative register allocation are implement, but there's no control flow analysis yet. This means the compiler has the visibility when things are used and dead-stores occur, but there's no rewriter pass to eliminate them.
 * No register sub-allocations, no aggressive use of caller-saved `R1-5`, no aggressive narrowing (this would require variable range assertions and variable relationships)
-* `bpf_perf_event_output()` is NYI
 * Slices with not 1/2/4/8 length are NYI (requires allocating a memory on stack and using pointer type)
 
 

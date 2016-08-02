@@ -55,6 +55,7 @@ local builtins_strict = {
 -- Return struct member size/type (requires LuaJIT 2.1+)
 -- I am ashamed that there's no easier way around it.
 local function sizeofattr(ct, name)
+	if not ffi.typeinfo then error('LuaJIT 2.1+ is required for ffi.typeinfo') end
 	local cinfo = ffi.typeinfo(ct)
 	while true do
 		cinfo = ffi.typeinfo(cinfo.sib)
@@ -155,9 +156,9 @@ local function reg_alloc(var, reg)
 end
 
 -- Set new variable
-local function vset(var, reg, const)
+local function vset(var, reg, const, vtype)
 	-- Get precise type for CDATA or attempt to narrow numeric constant
-	local vtype = type(const) == 'cdata' and ffi.typeof(const)
+	if not vtype and type(const) == 'cdata' then vtype = ffi.typeof(const) end
 	V[var] = {reg=reg, const=const, type=vtype}
 end
 
@@ -278,11 +279,6 @@ local function bb_end(Vcomp)
 	end
 end
 
-local function BUILTIN(func, ...)
-	func({V=V, vreg=vreg, vset=vset, vcopy=vcopy, vderef=vderef, valloc=valloc, emit=emit,
-		  reg_alloc=reg_alloc, reg_spill=reg_spill, tmpvar=stackslots, const_width=const_width}, ...)
-end
-
 local function LD_ABS(dst, off, w)
 	local dst_reg = vreg(dst, 0, true, builtins.width_type(w)) -- Reserve R0
 	-- assert(w < 8, 'NYI: LD_ABS64 is not supported') -- IMM64 has two IMM32 insns fused together
@@ -300,6 +296,17 @@ local function LD_FIELD(a, d, w, imm)
 		LD_ABS(a, imm, w)
 	else
 		LD_IND(a, d, w)
+	end
+end
+
+-- @note: This is specific now as it expects registers reserved
+local function LD_IMM_X(dst_reg, src_type, imm, w)
+	if w == 8 then -- IMM64 must be done in two instructions with imm64 = (lo(imm32), hi(imm32))
+		emit(BPF.LD + const_width[w], dst_reg, src_type, 0, ffi.cast('uint32_t', imm))
+		-- Must shift in two steps as bit.lshift supports [0..31]
+		emit(0, 0, 0, 0, ffi.cast('uint32_t', bit.lshift(bit.lshift(imm, 16), 16)))
+	else
+		emit(BPF.LD + const_width[w], dst_reg, src_type, 0, imm)
 	end
 end
 
@@ -446,6 +453,17 @@ local function ALU_IMM_NV(dst, a, b, op)
 	ALU_REG(dst, stackslots+1, b, op)
 end
 
+local function BUILTIN(func, ...)
+	local builtin_export = {
+		-- Compiler primitives (work with variable slots, emit instructions)
+		V=V, vreg=vreg, vset=vset, vcopy=vcopy, vderef=vderef, valloc=valloc, emit=emit,
+		reg_alloc=reg_alloc, reg_spill=reg_spill, tmpvar=stackslots, const_width=const_width,
+		-- Extensions and helpers (use with care)
+		LD_IMM_X = LD_IMM_X,
+	}
+	func(builtin_export, ...)
+end
+
 local function CALL(a, b, d)
 	assert(b-1 <= 1, 'NYI: CALL with >1 return values')
 	-- Perform either compile-time, helper, or builtin
@@ -484,17 +502,6 @@ local function CALL(a, b, d)
 	-- Attempt compile-time call expansion (expects all argument compile-time known)
 	else
 		V[a].const = func(unpack(args))
-	end
-end
-
--- @note: This is specific now as it expects registers reserved
-local function LD_IMM_X(dst_reg, src_type, imm, w)
-	if w == 8 then -- IMM64 must be done in two instructions with imm64 = (lo(imm32), hi(imm32))
-		emit(BPF.LD + const_width[w], dst_reg, src_type, 0, ffi.cast('uint32_t', imm))
-		-- Must shift in two steps as bit.lshift supports [0..31]
-		emit(0, 0, 0, 0, ffi.cast('uint32_t', bit.lshift(bit.lshift(imm, 16), 16)))
-	else
-		emit(BPF.LD + const_width[w], dst_reg, src_type, 0, imm)
 	end
 end
 
@@ -902,8 +909,35 @@ local bpf_map_mt = {
 					assert(S.bpf_map_op(c.BPF_CMD.MAP_LOOKUP_ELEM, map.fd, next_key, map.val))
 					return next_key[0], map.val[0]
 				end, map, nil
-			end
+			-- Read for perf event map
+			elseif k == 'reader' then
+				return function (map, pid, cpu)
+					-- Caller must either specify PID or CPU
+					if not pid or pid < 0 then
+						assert((cpu and cpu >= 0), 'NYI: creating composed reader for all CPUs')
+						pid = -1
+					end
+					-- Create BPF output reader
+					local pe = t.perf_event_attr1()
+					pe[0].type = 'software'
+					pe[0].config = 'sw_bpf_output'
+					pe[0].sample_type = 'raw'
+					pe[0].sample_period = 1
+					pe[0].wakeup_events = 1
+					local reader, err = t.perf_reader(S.perf_event_open(pe, pid, cpu or -1))
+					if not reader then return nil, err end
+					-- Register event reader fd in BPF map
+					assert(cpu < map.max_entries, string.format('BPF map smaller than read CPU %d', cpu))
+					map[cpu] = reader.fd
+					-- Open memory map and start reading
+					local ok, err = reader:start()
+					assert(ok, tostring(err))
+					ok, err = reader:mmap()
+					assert(ok, tostring(err))
+					return reader
+				end
 			-- Signalise this is a map type
+			end
 			return k == '__map'
 		end
 		-- Retrieve key
@@ -931,7 +965,7 @@ end
 
 local function trace_bpf(tp, ptype, pname, pdef, retprobe, prog, pid, cpu, group_fd)
 	-- Load BPF program
-	local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.KPROBE, prog.insn, prog.pc)
+	local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.KPROBE, prog.insn, prog.pc, 'GPL', cdef.osversion())
 	assert(prog_fd, tostring(err)..': '..tostring(log))
 	-- Open tracepoint and attach
 	local tp, err = S.perf_probe(ptype, pname, pdef, retprobe)
@@ -987,11 +1021,14 @@ return setmetatable({
 	socket = function (sock, prog)
 		-- Expect socket type, if sock is string then assume it's
 		-- an interface name (e.g. 'lo'), if it's a number then typecast it as a socket
+		local ok, err
 		if type(sock) == 'string' then
 			local iface = assert(S.nl.getlink())[sock]
 			assert(iface, sock..' is not interface name')
-			sock = assert(S.socket('packet', 'raw'))
-			assert(sock:bind(S.t.sockaddr_ll({protocol='all', ifindex=iface.index})))
+			sock, err = S.socket('packet', 'raw')
+			assert(sock, tostring(err))
+			ok, err = sock:bind(S.t.sockaddr_ll({protocol='all', ifindex=iface.index}))
+			assert(ok, tostring(err))
 		elseif type(sock) == 'number' then
 			sock = assert(S.t.socket(sock))
 		end
