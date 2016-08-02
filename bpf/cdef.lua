@@ -137,7 +137,7 @@ function M.osversion()
 	if not ver_str then -- kernel.version is freeform, fallback to kernel.osrelease
 		ver_str = S.sysctl('kernel.osrelease'):match('%d+.%d+.%d+')
 	end
-	version = 0
+	local version = 0
 	for i in ver_str:gmatch('%d+') do -- Convert 'X.Y.Z' to 0xXXYYZZ
 		version = bit.bor(version, bit.lshift(tonumber(i), 8*count))
 		count = count - 1

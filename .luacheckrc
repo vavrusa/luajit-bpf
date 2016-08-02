@@ -8,4 +8,5 @@ files["bpf/builtins.lua"] = {
 }
 files["spec"] = {
 	std = "+busted",
+	new_globals = { "pkt", "time", "xadd", "c" }
 }

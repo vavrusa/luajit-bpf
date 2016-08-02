@@ -512,7 +512,7 @@ local function MAP_INIT(map_var, key, imm)
 	LD_IMM_X(1, BPF.PSEUDO_MAP_FD, map.fd, ffi.sizeof(V[map_var].type))
 	-- Reserve R2 and load R2 = key pointer
 	local sp = stack_top + ffi.sizeof(map.key_type) -- Must use stack below spill slots
-	local w = assert(const_width[ffi.sizeof(map.key)], 'NYI: map key width must be 1/2/4/8')
+	local w = assert(const_width[ffi.sizeof(map.key_type)], 'NYI: map key width must be 1/2/4/8')
 	if not imm then imm = V[key].const end
 	if imm and (not key or not is_proxy(V[key].const)) then
 		emit(BPF.MEM + BPF.ST + w, 10, 0, -sp, imm)
@@ -911,7 +911,7 @@ local bpf_map_mt = {
 				end, map, nil
 			-- Read for perf event map
 			elseif k == 'reader' then
-				return function (map, pid, cpu)
+				return function (pmap, pid, cpu)
 					-- Caller must either specify PID or CPU
 					if not pid or pid < 0 then
 						assert((cpu and cpu >= 0), 'NYI: creating composed reader for all CPUs')
@@ -925,10 +925,10 @@ local bpf_map_mt = {
 					pe[0].sample_period = 1
 					pe[0].wakeup_events = 1
 					local reader, err = t.perf_reader(S.perf_event_open(pe, pid, cpu or -1))
-					if not reader then return nil, err end
+					if not reader then return nil, tostring(err) end
 					-- Register event reader fd in BPF map
-					assert(cpu < map.max_entries, string.format('BPF map smaller than read CPU %d', cpu))
-					map[cpu] = reader.fd
+					assert(cpu < pmap.max_entries, string.format('BPF map smaller than read CPU %d', cpu))
+					pmap[cpu] = reader.fd
 					-- Open memory map and start reading
 					local ok, err = reader:start()
 					assert(ok, tostring(err))

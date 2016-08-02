@@ -1,2 +1,7 @@
+LUA ?= luajit
+
 check:
-	luacheck .
+	@echo "[*] static analysis"
+	@luacheck --codes --formatter TAP .
+	@echo "[*] unit tests"
+	@busted --lua=$(LUA) -o TAP
