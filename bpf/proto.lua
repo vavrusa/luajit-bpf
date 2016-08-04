@@ -241,8 +241,8 @@ end
 
 -- Export types
 M.pkt     = {off=0, __dissector=ffi.typeof('struct eth_t')}
-M.skb     = {rel=true, __dissector=ffi.typeof('struct sk_buff')}
--- M.pt_regs = {rel=true, __dissector=ffi.typeof('struct pt_regs')}
+M.skb     = {__base=true, __dissector=ffi.typeof('struct sk_buff')}
+-- M.pt_regs = {__base=true, __dissector=ffi.typeof('struct pt_regs')}
 -- M.eth     = function (...) return dissector(ffi.typeof('struct eth_t'), ...) end
 M.dot1q   = function (...) return dissector(ffi.typeof('struct dot1q_t'), ...) end
 M.arp     = function (...) return dissector(ffi.typeof('struct arp_t'), ...) end

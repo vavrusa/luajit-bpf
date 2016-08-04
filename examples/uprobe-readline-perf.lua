@@ -5,26 +5,25 @@ local ffi = require('ffi')
 local bpf = require('bpf')
 local S = require('syscall')
 -- Perf event map
+local sample_t = 'struct { uint64_t pid; char str[80]; }'
 local events = bpf.map('perf_event_array')
 -- Kernel-space part of the program
 local prog = bpf(function (ptregs)
 	local req = ffi.cast('struct pt_regs', ptregs) -- Cast to pt_regs, specialized type.
-	local line = ffi.new('char [80]')              -- Create a byte buffer on stack
-	ffi.copy(line, ffi.cast('char *', req.ax))     -- Cast `ax` to string pointer and copy to buffer
-	table.insert(events, line)                     -- Write buffer to perf event map
-	-- FIXME: support for structures as perf event data, not just byte buffers
+	local sample = ffi.new(sample_t)
+	sample.pid = pid_tgid()
+	ffi.copy(sample.str, ffi.cast('char *', req.ax)) -- Cast `ax` to string pointer and copy to buffer
+	perf_submit(events, sample)                      -- Write buffer to perf event map
 end)
 bpf.dump(prog)
 local probe = assert(bpf.uprobe('/bin/bash:readline', prog, true, -1, 0))
 -- User-space part of the program
-local event_t = ffi.typeof 'struct { struct perf_event_header header; uint32_t len; char data[80]; } *'
-local log = events:reader(nil, 0) -- Must specify PID or CPU_ID to observe
+local log = events:reader(nil, 0, sample_t) -- Must specify PID or CPU_ID to observe
 print('            TASK-PID         TIMESTAMP  FUNCTION')
 print('               | |               |         |')
 while true do
-	S.select { readfds = {log.fd} } -- Wait until event reader is readable
-	for _,e in ipairs(log) do       -- Collect all reader events
-		e = ffi.cast(event_t, e)    -- FIXME: better API in ljsyscall with dynamic typing
-		print(string.format('%12s%-16s %-10s %s', '', 'x', os.date("%H:%M:%S"), ffi.string(e.data)))
+	log:block()               -- Wait until event reader is readable
+	for _,e in log:read() do  -- Collect available reader events
+		print(string.format('%12s%-16s %-10s %s', '', tonumber(e.pid), os.date("%H:%M:%S"), ffi.string(e.str)))
 	end
 end

@@ -24,7 +24,8 @@ local builtins = {
 }
 
 local function width_type(w)
-	return const_width_type[w] or ffi.typeof('uint8_t[?]', w)
+	-- Note: ffi.typeof doesn't accept '?' as template
+	return const_width_type[w] or ffi.typeof(string.format('uint8_t [%d]', w))
 end
 builtins.width_type = width_type
 
@@ -99,8 +100,7 @@ builtins[ffi.new] = function (e, dst, ct, x)
 	assert(not x, 'NYI: ffi.new(ctype, ...) - initializer is not supported')
 	assert(not cdef.isptr(ct, true), 'NYI: ffi.new(ctype, ...) - ctype MUST NOT be a pointer')
 	e.vset(dst, nil, ct)
-	e.V[dst].const = {}
-	e.V[dst].const.__base = e.valloc(ffi.sizeof(ct), true)
+	e.V[dst].const = {__base = e.valloc(ffi.sizeof(ct), true), __dissector = ct}
 end
 builtins[ffi.copy] = function (e,ret, dst, src)
 	assert(cdef.isptr(e.V[dst].type), 'ffi.copy(dst, src) - dst MUST be a pointer type')
@@ -277,10 +277,12 @@ builtins.cpu = cpu
 builtins.time = time
 builtins.pid_tgid = pid_tgid
 builtins.uid_gid = uid_gid
+builtins.perf_submit = perf_submit
 builtins[cpu] = function (e, dst) return call_helper(e, dst, HELPER.get_smp_processor_id) end
 builtins[rand] = function (e, dst) return call_helper(e, dst, HELPER.get_prandom_u32) end
 builtins[time] = function (e, dst) return call_helper(e, dst, HELPER.ktime_get_ns) end
 builtins[pid_tgid] = function (e, dst) return call_helper(e, dst, HELPER.get_current_pid_tgid) end
 builtins[uid_gid] = function (e, dst) return call_helper(e, dst, HELPER.get_current_uid_gid) end
+builtins[perf_submit] = function (e, dst, map, value) return perf_submit(e, dst, map, value) end
 
 return builtins

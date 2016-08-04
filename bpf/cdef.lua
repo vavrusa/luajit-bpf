@@ -145,4 +145,30 @@ function M.osversion()
 	return version
 end
 
+function M.event_reader(reader, event_type)
+	-- Caller can specify event message binary format
+	if event_type then
+		assert(type(event_type) == 'string' and ffi.typeof(event_type), 'not a valid type for event reader')
+		event_type = ffi.typeof(event_type .. '*') -- Convert type to pointer-to-type
+	end
+	-- Wrap reader in interface that can interpret read event messages
+	return setmetatable({reader=reader,type=event_type}, {__index = {
+		block = function(self)
+			return S.select { readfds = {reader.fd} }
+		end,
+		next = function(self, k)
+			local len, ev = reader:next(k)
+			if len and event_type then
+				-- The perf event reader returns framed data with header and variable length
+				-- This is going skip the frame header and cast data to given type
+				ev = ffi.cast(event_type, ffi.cast('char *', ev) + ffi.sizeof('struct perf_event_header') + ffi.sizeof('uint32_t'))
+			end
+			return len, ev
+		end,
+		read = function(self)
+			return self.next, self, nil
+		end,
+	}})
+end
+
 return M

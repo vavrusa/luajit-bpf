@@ -182,13 +182,13 @@ local function vreg(var, reg, reserve, vtype)
 		reg_fill(var, reg)
 	elseif src.const then
 		vtype = vtype or src.type
-		if type(src.const) == 'table' and src.const.__dissector then
-			-- Load dissector offset (imm32), but keep the constant part (dissector proxy)
-			emit(BPF.ALU64 + BPF.MOV + BPF.K, reg, 0, 0, src.const.off or 0)
-		elseif type(src.const) == 'table' and src.const.__base then
+		if type(src.const) == 'table' and src.const.__base then
 			-- Load pointer type
 			emit(BPF.ALU64 + BPF.MOV + BPF.X, reg, 10, 0, 0)
 			emit(BPF.ALU64 + BPF.ADD + BPF.K, reg, 0, 0, -src.const.__base)
+		elseif type(src.const) == 'table' and src.const.__dissector then
+			-- Load dissector offset (imm32), but keep the constant part (dissector proxy)
+			emit(BPF.ALU64 + BPF.MOV + BPF.K, reg, 0, 0, src.const.off or 0)
 		elseif vtype and ffi.sizeof(vtype) == 8 then
 			-- IMM64 must be done in two instructions with imm64 = (lo(imm32), hi(imm32))
 			emit(BPF.LD + BPF.DW, reg, 0, 0, ffi.cast('uint32_t', src.const))
@@ -672,8 +672,13 @@ local BC = {
 			local w = sizeofattr(base.__dissector, c)
 			assert(const_width[w], 'B[C] = A, sizeof(A) must be 1/2/4/8')
 			local src_reg = vreg(a)
-			emit(BPF.JMP + BPF.JEQ + BPF.K, V[b].reg, 0, 1, 0) -- if (map[x] != NULL)
-			emit(BPF.MEM + BPF.STX + const_width[w], V[b].reg, src_reg, ofs, 0)
+			-- If the table is not on stack, it must be checked for NULL
+			if not base.__base then
+				emit(BPF.JMP + BPF.JEQ + BPF.K, V[b].reg, 0, 1, 0) -- if (map[x] != NULL)
+				emit(BPF.MEM + BPF.STX + const_width[w], V[b].reg, src_reg, ofs, 0)
+			else -- Table is already on stack, write to base-relative address
+				emit(BPF.MEM + BPF.STX + const_width[w], 10, src_reg, -base.__base + ofs, 0)
+			end
 		elseif V[a].const then
 			base[c] = V[a].const
 		else error('NYI: B[C] = A, where B is not Lua table or BPF map')
@@ -702,12 +707,21 @@ local BC = {
 			else
 				assert(ofs, tostring(base.__dissector)..'.'..c..' attribute not exists')
 				if not V[a] then vset(a) end
+				-- Dissected value is probably not constant anymore
+				local new_const = nil
 				-- Simple register load, get absolute offset or R-relative
 				local w, atype = sizeofattr(base.__dissector, c)
-				if base.rel then -- R-relative addressing
+				if base.__base == true then -- R-relative addressing
 					local dst_reg = vreg(a, nil, true)
 					assert(const_width[w], 'NYI: sizeof('..tostring(base.__dissector)..'.'..c..') not 1/2/4/8 bytes')
 					emit(BPF.MEM + BPF.LDX + const_width[w], dst_reg, V[b].reg, ofs, 0)
+				elseif base.__base > 0 then -- SP-relative addressing
+					if cdef.isptr(atype) then -- If the member is pointer type, update base pointer with offset
+						new_const = {__base = base.__base-ofs}
+					else
+						local dst_reg = vreg(a, nil, true)
+						emit(BPF.MEM + BPF.LDX + const_width[w], dst_reg, 10, -base.__base+ofs, 0)
+					end
 				elseif base.off then -- Absolute address to payload
 					LD_ABS(a, ofs + base.off, w)
 				else -- Indirect address to payload
@@ -729,7 +743,7 @@ local BC = {
 					end
 				end
 				V[a].type = atype
-				V[a].const = nil -- Dissected value is not constant anymore
+				V[a].const = new_const
 				V[a].source = V[b].source
 			end
 		else V[a].const = base[c] end
@@ -868,7 +882,10 @@ local function dump_alu(cls, ins, pc)
 	local jmp = {'JA', 'JEQ', 'JGT', 'JGE', 'JSET', 'JNE', 'JSGT', 'JSGE', 'CALL', 'EXIT'}
 	local helper = {'unspec', 'map_lookup_elem', 'map_update_elem', 'map_delete_elem', 'probe_read', 'ktime_get_ns',
 					'trace_printk', 'get_prandom_u32', 'get_smp_processor_id', 'skb_store_bytes',
-					'l3_csum_replace', 'l4_csum_replace', 'tail_call'}
+					'l3_csum_replace', 'l4_csum_replace', 'tail_call', 'clone_redirect', 'get_current_pid_tgid',
+					'get_current_uid_gid', 'get_current_comm', 'get_cgroup_classid', 'skb_vlan_push', 'skb_vlan_pop',
+					'skb_get_tunnel_key', 'skb_set_tunnel_key', 'perf_event_read', 'redirect', 'get_route_realm',
+					'perf_event_output', 'skb_load_bytes'}
 	local op = 0
 	for i = 0,13 do if 0x10 * i == bit.band(ins.code, 0xf0) then op = i + 1 break end end
 	local name = (cls == 5) and jmp[op] or alu[op]
@@ -911,7 +928,7 @@ local bpf_map_mt = {
 				end, map, nil
 			-- Read for perf event map
 			elseif k == 'reader' then
-				return function (pmap, pid, cpu)
+				return function (pmap, pid, cpu, event_type)
 					-- Caller must either specify PID or CPU
 					if not pid or pid < 0 then
 						assert((cpu and cpu >= 0), 'NYI: creating composed reader for all CPUs')
@@ -934,7 +951,7 @@ local bpf_map_mt = {
 					assert(ok, tostring(err))
 					ok, err = reader:mmap()
 					assert(ok, tostring(err))
-					return reader
+					return cdef.event_reader(reader, event_type)
 				end
 			-- Signalise this is a map type
 			end
