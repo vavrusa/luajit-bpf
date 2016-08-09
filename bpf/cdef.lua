@@ -184,7 +184,11 @@ function M.event_reader(reader, event_type)
 		end,
 		next = function(self, k)
 			local len, ev = reader:next(k)
-			if len and event_type then
+			-- Filter out only sample frames
+			while ev and ev.type ~= S.c.PERF_RECORD.SAMPLE do
+				len, ev = reader:next(len)
+			end
+			if ev and event_type then
 				-- The perf event reader returns framed data with header and variable length
 				-- This is going skip the frame header and cast data to given type
 				ev = ffi.cast(event_type, ffi.cast('char *', ev) + ffi.sizeof('struct perf_event_header') + ffi.sizeof('uint32_t'))
@@ -195,6 +199,19 @@ function M.event_reader(reader, event_type)
 			return self.next, self, nil
 		end,
 	}})
+end
+
+function M.tracepoint_type(tp)
+	-- Read tracepoint format string
+	local fp = assert(io.open('/sys/kernel/debug/tracing/events/'..tp..'/format', 'r'))
+	local fmt = fp:read '*a'
+	fp:close()
+	-- Parse struct fields
+	local fields = {}
+	for f in fmt:gmatch 'field:([^;]+;)' do
+		table.insert(fields, f)
+	end
+	return string.format('struct { %s }', table.concat(fields))
 end
 
 return M

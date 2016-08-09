@@ -1020,7 +1020,6 @@ local function compile(prog, params)
 			print('error: '..e)
 			print(debug.traceback())
 	end
-	bytecode.dump(prog)
 	for _,op,a,b,c,d in bytecode.decoder(prog) do
 		local ok, res, err = xpcall(E,on_err,op,a,b,c,d)
 		if not ok then
@@ -1115,7 +1114,6 @@ local tracepoint_mt = {
 			if type(prog) ~= 'table' then
 				-- Create protocol parser with source=probe
 				prog = compile(prog, {proto.type(t.type, {source='probe'})})
-				dump(prog)
 			end
 			-- Load the BPF program
 			local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.TRACEPOINT, prog.insn, prog.pc)
@@ -1219,15 +1217,15 @@ return setmetatable({
 		return prog_fd, err
 	end,
 	tracepoint = function(tp, prog, pid, cpu, group_fd)
-		error('NYI: no kernel support for static tracepoints yet')
-		-- -- Load the BPF program
-		-- local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.TRACEPOINT, prog.insn, prog.pc)
-		-- assert(prog_fd, tostring(err)..': '..tostring(log))
-		-- -- Open tracepoint and attach
-		-- local tp = assert(S.perf_tracepoint("/sys/kernel/debug/tracing/events/"..tp))
-		-- local reader = assert(S.perf_attach_tracepoint(tp, pid, cpu, group_fd))
-		-- reader:setbpf(prog_fd:getfd())
-		-- return reader, prog_fd
+		assert(trace_check_enabled())
+		-- Return tracepoint instance if no program specified
+		-- this allows free specialisation of arg0 to tracepoint type
+		local probe = tracepoint_open(tp, pid, cpu, group_fd)
+		-- Load the BPF program
+		if prog then
+			probe:bpf(prog)
+		end
+		return probe
 	end,
 	kprobe = function(tp, prog, retprobe, pid, cpu, group_fd)
 		assert(trace_check_enabled())
