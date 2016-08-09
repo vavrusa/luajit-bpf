@@ -565,8 +565,20 @@ local function MAP_GET(dst, map_var, key, imm)
 	V[stackslots].reg = nil -- Free temporary registers
 end
 
+local function MAP_DEL(map_var, key, key_imm)
+	-- Set R0, R1 (map fd, preempt R0)
+	reg_alloc(stackslots, 0) -- Spill anything in R0 (unnamed tmp variable)
+	MAP_INIT(map_var, key, key_imm)
+	emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.map_delete_elem)
+	V[stackslots].reg = nil -- Free temporary registers
+end
+
 local function MAP_SET(map_var, key, key_imm, src)
-	local map = V[map_var].const
+	local map = V[map_var].const	
+	-- Delete when setting nil
+	if V[src].type == ffi.typeof('void') then
+		return MAP_DEL(map_var, key, key_imm)
+	end
 	-- Set R0, R1 (map fd, preempt R0)
 	reg_alloc(stackslots, 0) -- Spill anything in R0 (unnamed tmp variable)
 	MAP_INIT(map_var, key, key_imm)
@@ -614,11 +626,16 @@ end
 -- Finally - this table translates LuaJIT bytecode into code emitter actions.
 local BC = {
 	-- Constants
+	KNUM = function(a, _, c, _) -- KNUM
+		vset(a, nil, c, ffi.typeof('int32_t')) -- TODO: only 32bit immediates are supported now
+	end,
 	KSHORT = function(a, _, _, d) -- KSHORT
 		vset(a, nil, d, ffi.typeof('int16_t'))
 	end,
 	KPRI = function(a, _, _, d) -- KPRI
-		vset(a, nil, (d < 2) and 0 or 1, ffi.typeof('uint8_t'))
+		-- KNIL is 0, must create a special type to identify it
+		local vtype = (d < 1) and ffi.typeof('void') or ffi.typeof('uint8_t')
+		vset(a, nil, (d < 2) and 0 or 1, vtype)
 	end,
 	KSTR = function(a, _, c, _) -- KSTR
 		vset(a, nil, c, ffi.typeof('const char[?]'))
@@ -1091,9 +1108,38 @@ local function trace_check_enabled(path)
 	return nil, 'debugfs not accessible: "mount -t debugfs nodev /sys/kernel/debug"? missing sudo?'
 end
 
+-- Tracepoint interface
+local tracepoint_mt = {
+	__index = {
+		bpf = function (t, prog)
+			if type(prog) ~= 'table' then
+				-- Create protocol parser with source=probe
+				prog = compile(prog, {proto.type(t.type, {source='probe'})})
+				dump(prog)
+			end
+			-- Load the BPF program
+			local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.TRACEPOINT, prog.insn, prog.pc)
+			assert(prog_fd, tostring(err)..': '..tostring(log))
+			-- Open tracepoint and attach
+			t.reader:setbpf(prog_fd:getfd())
+			table.insert(t.progs, prog_fd)
+			return prog_fd
+		end,
+	}
+}
+-- Open tracepoint
+local function tracepoint_open(path, pid, cpu, group_fd)
+	-- Open tracepoint and compile tracepoint type
+	local tp = assert(S.perf_tracepoint('/sys/kernel/debug/tracing/events/'..path))
+	local tp_type = assert(cdef.tracepoint_type(path))
+	-- Open tracepoint reader and create interface
+	local reader = assert(S.perf_attach_tracepoint(tp, pid, cpu, group_fd))
+	return setmetatable({tp=tp,type=tp_type,reader=reader,progs={}}, tracepoint_mt)
+end
+
 local function trace_bpf(tp, ptype, pname, pdef, retprobe, prog, pid, cpu, group_fd)
 	-- Load BPF program
-	local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.KPROBE, prog.insn, prog.pc, 'GPL', cdef.osversion())
+	local prog_fd, err, log = S.bpf_prog_load(S.c.BPF_PROG.KPROBE, prog.insn, prog.pc)
 	assert(prog_fd, tostring(err)..': '..tostring(log))
 	-- Open tracepoint and attach
 	local tp, err = S.perf_probe(ptype, pname, pdef, retprobe)
