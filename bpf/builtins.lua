@@ -78,6 +78,46 @@ builtins[xadd] = function (e, dst, a, b, off)
 	e.emit(BPF.JMP + BPF.JEQ + BPF.K, dst_reg, 0, 1, 0) -- if (dst != NULL)
 	e.emit(BPF.XADD + BPF.STX + const_width[w], dst_reg, src_reg, off or 0, 0)
 end
+
+local function probe_read() error('NYI') end
+builtins.probe_read = probe_read
+builtins[probe_read] = function (e, ret, dst, src, vtype, ofs)
+	e.reg_alloc(e.tmpvar, 1)
+	-- Load stack pointer to dst, since only load to stack memory is supported
+	-- we have to use allocated stack memory or create a new allocation and convert
+	-- to pointer type
+	e.emit(BPF.ALU64 + BPF.MOV + BPF.X, 1, 10, 0, 0)
+	if not e.V[dst].const or not e.V[dst].const.__base > 0 then
+		builtins[ffi.new](e, dst, vtype) -- Allocate stack memory
+	end
+	e.emit(BPF.ALU64 + BPF.ADD + BPF.K, 1, 0, 0, -e.V[dst].const.__base)
+	-- Set stack memory maximum size bound
+	e.reg_alloc(e.tmpvar, 2)
+	if not vtype then
+		vtype = cdef.typename(e.V[dst].type)
+		-- Dereference pointer type to pointed type for size calculation
+		if vtype:sub(-1) == '*' then vtype = vtype:sub(0, -2) end
+	end
+	local w = ffi.sizeof(vtype)
+	e.emit(BPF.ALU64 + BPF.MOV + BPF.K, 2, 0, 0, w)
+	-- Set source pointer
+	if e.V[src].reg then
+		e.reg_alloc(e.tmpvar, 3) -- Copy from original register
+		e.emit(BPF.ALU64 + BPF.MOV + BPF.X, 3, e.V[src].reg, 0, 0)
+	else
+		local src_reg = e.vreg(src, 3)
+		e.reg_spill(src) -- Spill to avoid overwriting
+	end
+	if ofs and ofs > 0 then
+		e.emit(BPF.ALU64 + BPF.ADD + BPF.K, 3, 0, 0, ofs)
+	end
+	-- Call probe read helper
+	ret = ret or e.tmpvar
+	e.vset(ret)
+	e.vreg(ret, 0, true, ffi.typeof('int32_t'))
+	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.probe_read)
+	e.V[e.tmpvar].reg = nil  -- Free temporary registers
+end
 builtins[ffi.cast] = function (e, dst, ct, x)
 	assert(e.V[ct].const, 'ffi.cast(ctype, x) called with bad ctype')
 	e.vcopy(dst, x)
@@ -91,12 +131,15 @@ builtins[ffi.cast] = function (e, dst, ct, x)
 	-- different data sources, so variables must track origins.
 	-- struct pt_regs - source of the data is probe
 	-- struct skb     - source of the data is socket buffer
+	-- struct X       - source of the data is probe/tracepoint
 	if ffi.typeof(e.V[ct].const) == ffi.typeof('struct pt_regs') then
-		e.V[dst].source = ffi.typeof('struct pt_regs')
+		e.V[dst].source = 'probe'
 	end
 end
 builtins[ffi.new] = function (e, dst, ct, x)
-	ct = ffi.typeof(e.V[ct].const) -- Get ctype
+	if type(ct) == 'number' then
+		ct = ffi.typeof(e.V[ct].const) -- Get ctype from variable
+	end
 	assert(not x, 'NYI: ffi.new(ctype, ...) - initializer is not supported')
 	assert(not cdef.isptr(ct, true), 'NYI: ffi.new(ctype, ...) - ctype MUST NOT be a pointer')
 	e.vset(dst, nil, ct)
@@ -108,7 +151,7 @@ builtins[ffi.copy] = function (e,ret, dst, src)
 	-- Specific types also encode source of the data
 	-- struct pt_regs - source of the data is probe
 	-- struct skb     - source of the data is socket buffer
-	if e.V[src].source == ffi.typeof('struct pt_regs') then
+	if e.V[src].source == 'probe' then
 		e.reg_alloc(e.tmpvar, 1)
 		-- Load stack pointer to dst, since only load to stack memory is supported
 		-- we have to either use spilled variable or allocated stack memory offset

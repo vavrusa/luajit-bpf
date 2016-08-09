@@ -24,7 +24,7 @@ local prog = bpf(function (skb)
 	   	-- otherwise increment counter
 	   local v = map[h]
 	   if not v then map[h] = 1
-	   else          xadd(v, 1)
+	   else          xadd(map[h], 1)
 	   end
 	end
 end)

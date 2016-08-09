@@ -516,21 +516,43 @@ local function MAP_INIT(map_var, key, imm)
 	vreg(map_var, 1, true, ffi.typeof('uint64_t'))
 	-- Reserve R1 and load ptr for process-local map fd
 	LD_IMM_X(1, BPF.PSEUDO_MAP_FD, map.fd, ffi.sizeof(V[map_var].type))
+	V[map_var].reg = nil -- R1 will be invalidated after CALL, forget register allocation
 	-- Reserve R2 and load R2 = key pointer
-	local sp = stack_top + ffi.sizeof(map.key_type) -- Must use stack below spill slots
-	local w = assert(const_width[ffi.sizeof(map.key_type)], 'NYI: map key width must be 1/2/4/8')
-	if not imm then imm = V[key].const end
-	if imm and (not key or not is_proxy(V[key].const)) then
-		emit(BPF.MEM + BPF.ST + w, 10, 0, -sp, imm)
-	elseif V[key].reg then
-		emit(BPF.MEM + BPF.STX + w, 10, V[key].reg, -sp, 0)
-	else
-		assert(V[key].spill, 'VAR '..key..' is neither const-expr/register/spilled')
-		sp = V[key].spill
-	end
+	local key_size = ffi.sizeof(map.key_type)
+	local w = const_width[key_size] or BPF.DW
+	local pod_type = const_width[key_size]
+	local sp = stack_top + key_size -- Must use stack below spill slots
+	-- Store immediate value on stack
 	reg_alloc(stackslots, 2) -- Spill anything in R2 (unnamed tmp variable)
-	emit(BPF.ALU64 + BPF.MOV + BPF.X, 2, 10, 0, 0)
-	emit(BPF.ALU64 + BPF.ADD + BPF.K, 2, 0, 0, -sp)
+	local key_base = key and V[key].const
+	imm = imm or key_base
+	if imm and (not key or not is_proxy(key_base)) then
+		assert(pod_type, 'NYI: map[const K], K width must be 1/2/4/8')
+		emit(BPF.MEM + BPF.ST + w, 10, 0, -sp, imm)
+	-- Key is in register, spill it
+	elseif V[key].reg and pod_type then
+		if cdef.isptr(V[key].type) then
+			-- There is already pointer in register, dereference before spilling
+			emit(BPF.MEM + BPF.LDX + w, 2, V[key].reg, 0, 0)
+			emit(BPF.MEM + BPF.STX + w, 10, 2, -sp, 0)
+		else -- Variable in register is POD, spill it on the stack
+			emit(BPF.MEM + BPF.STX + w, 10, V[key].reg, -sp, 0)
+		end
+	-- Key is spilled from register to stack
+	elseif V[key].spill then
+		sp = V[key].spill
+	-- Key is already on stack, write to base-relative address
+	elseif key_base.__base then
+		assert(key_size == ffi.sizeof(V[key].type), 'VAR '..key..' type incompatible with BPF map key type')
+		sp = key_base.__base
+	else
+		error('VAR '..key..' is neither const-expr/register/stack/spilled')
+	end
+	-- If [FP+K] addressing, emit it
+	if sp then
+		emit(BPF.ALU64 + BPF.MOV + BPF.X, 2, 10, 0, 0)
+		emit(BPF.ALU64 + BPF.ADD + BPF.K, 2, 0, 0, -sp)
+	end
 end
 
 local function MAP_GET(dst, map_var, key, imm)
@@ -548,32 +570,43 @@ local function MAP_SET(map_var, key, key_imm, src)
 	-- Set R0, R1 (map fd, preempt R0)
 	reg_alloc(stackslots, 0) -- Spill anything in R0 (unnamed tmp variable)
 	MAP_INIT(map_var, key, key_imm)
+	reg_alloc(stackslots, 4) -- Spill anything in R4 (unnamed tmp variable)
+	emit(BPF.ALU64 + BPF.MOV + BPF.K, 4, 0, 0, 0) -- BPF_ANY, create new element or update existing
 	-- Reserve R3 for value pointer
 	local val_size = ffi.sizeof(map.val_type)
-	local w = assert(const_width[val_size], 'NYI: MAP[K] = V; V width must be 1/2/4/8')
-	-- Stack pointer must be aligned to both key/value size
-	local sp = stack_top + math.max(ffi.sizeof(map.key_type), val_size) + val_size
-	if V[src].reg then
+	local w = const_width[val_size] or BPF.DW
+	local pod_type = const_width[val_size]
+	-- Stack pointer must be aligned to both key/value size and have enough headroom for (key, value)
+	local sp = stack_top + ffi.sizeof(map.key_type) + val_size
+	sp = sp + (sp % val_size)
+	local base = V[src].const
+	if base and not is_proxy(base) then
+		assert(pod_type, 'NYI: MAP[K] = imm V; V width must be 1/2/4/8')
+		emit(BPF.MEM + BPF.ST + w, 10, 0, -sp, base)
+	-- Value is in register, spill it
+	elseif V[src].reg and pod_type then
 		emit(BPF.MEM + BPF.STX + w, 10, V[src].reg, -sp, 0)
+	-- We get a pointer to spilled register on stack
 	elseif V[src].spill then
-		-- If variable is a pointer, we can load it to R3 directly (cheap dereference)
+		-- If variable is a pointer, we can load it to R3 directly (save "LEA")
 		if cdef.isptr(V[src].type) then
 			reg_fill(src, 3)
 			emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.map_update_elem)
 			return
-		else -- We get a pointer to spilled register on stack
+		else
 			sp = V[src].spill
 		end
+	-- Value is already on stack, write to base-relative address
+	elseif base.__base then
+		assert(val_size == ffi.sizeof(V[key].type), 'VAR '..key..' type incompatible with BPF map value type')
+		sp = key_base.__base
+	-- Value is constant, materialize it on stack
 	else
-		assert(not is_proxy(V[src].const), 'VAR '..src..' is neither const-expr/register/spilled')
-		emit(BPF.MEM + BPF.ST + w, 10, 0, -sp, V[src].const)
-		-- TODO: DW precision
+		error('VAR '..key..' is neither const-expr/register/stack/spilled')
 	end
 	reg_alloc(stackslots, 3) -- Spill anything in R3 (unnamed tmp variable)
 	emit(BPF.ALU64 + BPF.MOV + BPF.X, 3, 10, 0, 0)
 	emit(BPF.ALU64 + BPF.ADD + BPF.K, 3, 0, 0, -sp)
-	reg_alloc(stackslots, 4) -- Spill anything in R4 (unnamed tmp variable)
-	emit(BPF.ALU64 + BPF.MOV + BPF.K, 4, 0, 0, 0)
 	emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.map_update_elem)
 	V[stackslots].reg = nil -- Free temporary registers
 end
@@ -678,8 +711,21 @@ local BC = {
 			local ofs,bpos,bsize = ffi.offsetof(base.__dissector, c)
 			assert(not bpos, 'NYI: B[C] = A, where C is a bitfield')
 			local w = sizeofattr(base.__dissector, c)
+			-- TODO: support vectorized moves larger than register width
 			assert(const_width[w], 'B[C] = A, sizeof(A) must be 1/2/4/8')
 			local src_reg = vreg(a)
+			-- If source is a pointer, we must dereference it first
+			if cdef.isptr(V[a].type) then
+				local tmp_reg = reg_alloc(stackslots, 1) -- Clone variable in tmp register
+				emit(BPF.ALU64 + BPF.MOV + BPF.X, tmp_reg, src_reg, 0, 0)
+				vderef(tmp_reg, tmp_reg, V[a].const.__dissector)
+				src_reg = tmp_reg -- Materialize and dereference it
+			-- Source is a value on stack, we must load it first
+			elseif V[a].const and V[a].const.__base > 0 then
+				emit(BPF.MEM + BPF.LDX + const_width[w], src_reg, 10, -V[a].const.__base, 0)
+				V[a].type = V[a].const.__dissector
+				V[a].const = nil -- Value is dereferenced
+			end
 			-- If the table is not on stack, it must be checked for NULL
 			if not base.__base then
 				emit(BPF.JMP + BPF.JEQ + BPF.K, V[b].reg, 0, 1, 0) -- if (map[x] != NULL)
@@ -733,6 +779,10 @@ local BC = {
 					end
 				elseif base.off then -- Absolute address to payload
 					LD_ABS(a, ofs + base.off, w)
+				elseif base.source == 'probe' then -- Indirect read using probe
+					BUILTIN(builtins[builtins.probe_read], nil, a, b, atype, ofs)
+					V[a].source = V[b].source -- Builtin handles everything
+					return
 				else -- Indirect address to payload
 					LD_IND(a, b, w, ofs)
 				end
@@ -974,8 +1024,14 @@ local bpf_map_mt = {
 				return function(t, key)
 					-- Get next key
 					local next_key = ffi.new(ffi.typeof(t.key))
-					t.key[0] = key or 0
-					local ok, err = S.bpf_map_op(c.BPF_CMD.MAP_GET_NEXT_KEY, map.fd, map.key, next_key)
+					local cur_key
+					if key then
+						cur_key = t.key
+						t.key[0] = key
+					else
+						cur_key = ffi.new(ffi.typeof(t.key))
+					end
+					local ok, err = S.bpf_map_op(c.BPF_CMD.MAP_GET_NEXT_KEY, map.fd, cur_key, next_key)
 					if not ok then return nil end
 					-- Get next value
 					assert(S.bpf_map_op(c.BPF_CMD.MAP_LOOKUP_ELEM, map.fd, next_key, map.val))

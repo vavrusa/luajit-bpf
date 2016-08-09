@@ -240,9 +240,14 @@ local function skip_eth(e, dst)
 end
 
 -- Export types
-M.pkt     = {off=0, __dissector=ffi.typeof('struct eth_t')}
-M.skb     = {__base=true, __dissector=ffi.typeof('struct sk_buff')}
--- M.pt_regs = {__base=true, __dissector=ffi.typeof('struct pt_regs')}
+M.type = function(typestr, t)
+	t = t or {}
+	t.__dissector=ffi.typeof(typestr)
+	return t
+end
+M.skb     = M.type('struct sk_buff', {__base=true})
+M.pt_regs = M.type('struct pt_regs', {__base=true, source='probe'})
+M.pkt     = {off=0, __dissector=ffi.typeof('struct eth_t')} -- skb needs special accessors
 -- M.eth     = function (...) return dissector(ffi.typeof('struct eth_t'), ...) end
 M.dot1q   = function (...) return dissector(ffi.typeof('struct dot1q_t'), ...) end
 M.arp     = function (...) return dissector(ffi.typeof('struct arp_t'), ...) end
