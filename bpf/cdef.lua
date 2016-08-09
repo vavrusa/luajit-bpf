@@ -1,4 +1,5 @@
 local ffi = require('ffi')
+local S = require('syscall')
 local M = {}
 
 ffi.cdef [[
@@ -56,6 +57,11 @@ struct bpf {
 	static const int TO_BE = 0x08;	/* convert to big-endian */
 	/* misc */
 	static const int PSEUDO_MAP_FD = 0x01;
+	/* helper functions */
+	static const int F_CURRENT_CPU    = 0xffffffff;
+	static const int F_USER_STACK     = 1 << 8;
+	static const int F_FAST_STACK_CMP = 1 << 9;
+	static const int F_REUSE_STACKID  = 1 << 10;
 };
 /* eBPF commands */
 struct bpf_cmd {
@@ -67,14 +73,6 @@ struct bpf_cmd {
 	static const int PROG_LOAD        = 5;
 	static const int OBJ_PIN          = 6;
 	static const int OBJ_GET          = 7;
-};
-/* eBPF program types */
-struct bpf_prog {
-	static const int UNSPEC        = 0;
-	static const int SOCKET_FILTER = 1;
-	static const int KPROBE        = 2;
-	static const int SCHED_CLS     = 3;
-	static const int SCHED_ACT     = 4;
 };
 /* eBPF helpers */
 struct bpf_func_id {
@@ -105,14 +103,42 @@ struct bpf_func_id {
 	static const int get_route_realm      = 24;
 	static const int perf_event_output    = 25;
 	static const int skb_load_bytes       = 26;
+	static const int get_stackid          = 27;
+};
+/* BPF_MAP_STACK_TRACE structures and constants */
+static const int BPF_MAX_STACK_DEPTH = 127;
+struct bpf_stacktrace {
+	uint64_t ip[BPF_MAX_STACK_DEPTH];
 };
 ]]
 
 -- Compatibility: ljsyscall doesn't have support for BPF syscall
-local S = require('syscall')
 if not S.bpf then
 	function S.bpf () error("ljsyscall doesn't support bpf(), must be updated") end
 end 
+
+-- Compatibility: ljsyscall<=0.12
+if not S.c.BPF_MAP.PERCPU_HASH then
+	S.c.BPF_MAP.PERCPU_HASH  = 5
+	S.c.BPF_MAP.PERCPU_ARRAY = 6
+	S.c.BPF_MAP.STACK_TRACE  = 7
+	S.c.BPF_MAP.CGROUP_ARRAY = 8
+end
+if not S.c.BPF_PROG.TRACEPOINT then
+	S.c.BPF_PROG.TRACEPOINT  = 5
+end
+
+-- Compatibility: metatype for stacktrace
+function stacktrace_iter(t, i)
+	i = i + 1
+	if i < #t and t.ip[i] > 0 then
+		return i, t.ip[i]
+	end
+end
+ffi.metatype('struct bpf_stacktrace', {
+	__len = function (t) return ffi.sizeof(t.ip) / ffi.sizeof(t.ip[0]) end,
+	__ipairs = function (t) return stacktrace_iter, t, -1 end,
+})
 
 -- Reflect cdata type
 function M.typename(v)

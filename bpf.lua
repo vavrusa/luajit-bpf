@@ -1134,12 +1134,18 @@ return setmetatable({
 		if not key_ctype then key_ctype = ffi.typeof('uint32_t') end
 		if not val_ctype then val_ctype = ffi.typeof('uint32_t') end
 		if not max_entries then max_entries = 4096 end
+		-- Special case for BPF_MAP_STACK_TRACE
+		if c.BPF_MAP[type] == c.BPF_MAP.STACK_TRACE then
+			key_ctype = ffi.typeof('int32_t')
+			val_ctype = ffi.typeof('struct bpf_stacktrace')
+		end
 		local fd, err = S.bpf_map_create(c.BPF_MAP[type], ffi.sizeof(key_ctype), ffi.sizeof(val_ctype), max_entries)
 		if not fd then return nil, tostring(err) end
 		local map = setmetatable({
 			max_entries = max_entries,
 			key = ffi.new(ffi.typeof('$ [1]', key_ctype)),
 			val = ffi.new(ffi.typeof('$ [1]', val_ctype)),
+			map_type = c.BPF_MAP[type],
 			key_type = key_ctype,
 			val_type = val_ctype,
 			fd = fd:nogc():getfd(),

@@ -250,6 +250,28 @@ local function perf_submit(e, dst, map_var, src)
 	e.V[e.tmpvar].reg = nil  -- Free temporary registers
 end
 
+-- Implements bpf_get_stack_id()
+local function stack_id(e, ret, map_var, key)
+	-- Set R2 = map fd (indirect load)
+	local map = e.V[map_var].const
+	e.vcopy(e.tmpvar, map_var)
+	e.vreg(e.tmpvar, 2, true, ffi.typeof('uint64_t'))
+	e.LD_IMM_X(2, BPF.PSEUDO_MAP_FD, map.fd, ffi.sizeof('uint64_t'))
+	-- Set R1 = ctx
+	e.reg_alloc(e.tmpvar, 1) -- Spill anything in R1 (unnamed tmp variable)
+	e.emit(BPF.ALU64 + BPF.MOV + BPF.X, 1, 6, 0, 0) -- CTX is always in R6, copy
+	-- Load flags in R2 (immediate value or key)
+	local imm = e.V[key].const
+	assert(tonumber(imm), 'NYI: stack_id(map, var), var must be constant number')
+	e.reg_alloc(e.tmpvar, 3) -- Spill anything in R2 (unnamed tmp variable)
+	e.LD_IMM_X(3, 0, imm, 8)
+	-- Return R0 as signed integer
+	e.vset(ret)
+	e.vreg(ret, 0, true, ffi.typeof('int32_t'))
+	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.get_stackid)
+	e.V[e.tmpvar].reg = nil  -- Free temporary registers
+end
+
 -- table.insert(table, value) keeps semantics with the exception of BPF maps
 -- map `perf_event` -> submit inserted value
 builtins[table.insert] = function (e, dst, map_var, value)
@@ -343,11 +365,13 @@ builtins.pid_tgid = pid_tgid
 builtins.uid_gid = uid_gid
 builtins.comm = comm
 builtins.perf_submit = perf_submit
+builtins.stack_id = stack_id
 builtins[cpu] = function (e, dst) return call_helper(e, dst, HELPER.get_smp_processor_id) end
 builtins[rand] = function (e, dst) return call_helper(e, dst, HELPER.get_prandom_u32) end
 builtins[time] = function (e, dst) return call_helper(e, dst, HELPER.ktime_get_ns) end
 builtins[pid_tgid] = function (e, dst) return call_helper(e, dst, HELPER.get_current_pid_tgid) end
 builtins[uid_gid] = function (e, dst) return call_helper(e, dst, HELPER.get_current_uid_gid) end
 builtins[perf_submit] = function (e, dst, map, value) return perf_submit(e, dst, map, value) end
+builtins[stack_id] = function (e, dst, map, key) return stack_id(e, dst, map, key) end
 
 return builtins
