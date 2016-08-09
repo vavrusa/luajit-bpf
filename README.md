@@ -88,6 +88,7 @@ Below is a list of BPF-specific helpers:
 * `cpu()` - return current CPU number (uses `bpf_get_smp_processor_id`)
 * `pid_tgid()` - return caller `tgid << 32 | pid` (uses `bpf_get_current_pid_tgid`)
 * `uid_gid()` - return caller `gid << 32 | uid` (uses `bpf_get_current_uid_gid`)
+* `comm(var)` - write current process name (uses `bpf_get_current_comm`)
 * `perf_submit(map, var)` - submit variable to perf event array BPF map
 
 ## Current state
