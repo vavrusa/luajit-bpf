@@ -132,8 +132,8 @@ builtins[ffi.copy] = function (e,ret, dst, src)
 			e.reg_spill(src) -- Spill to avoid overwriting
 		end
 		-- Call probe read helper
+		e.vset(ret)
 		e.vreg(ret, 0, true, ffi.typeof('int32_t'))
-		e.V[ret].const = nil
 		e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.probe_read)
 		e.V[e.tmpvar].reg = nil  -- Free temporary registers
 	elseif e.V[src].const and e.V[src].const.__map then
@@ -175,6 +175,7 @@ builtins[print] = function (e, ret, fmt, a1, a2, a3)
 		end
 	end
 	-- Call helper
+	e.vset(ret)
 	e.vreg(ret, 0, true, ffi.typeof('int32_t')) -- Return is integer
 	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.trace_printk)
 	e.V[e.tmpvar].reg = nil  -- Free temporary registers
@@ -200,6 +201,7 @@ local function perf_submit(e, dst, map_var, src)
 	-- Set R5 = src length
 	e.emit(BPF.ALU64 + BPF.MOV + BPF.K, 5, 0, 0, ffi.sizeof(e.V[src].type))
 	-- Set R0 = ret and call
+	e.vset(dst)
 	e.vreg(dst, 0, true, ffi.typeof('int32_t')) -- Return is integer
 	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.perf_event_output)
 	e.V[e.tmpvar].reg = nil  -- Free temporary registers
@@ -262,6 +264,7 @@ end
 
 -- Call-type helpers
 local function call_helper(e, dst, h)
+	e.vset(dst)
 	local dst_reg = e.vreg(dst, 0, true)
 	e.emit(BPF.JMP + BPF.CALL, 0, 0, 0, h)
 	e.V[dst].const = nil -- Target is not a function anymore

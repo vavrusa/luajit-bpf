@@ -28,7 +28,7 @@ local builtins = require('bpf.builtins')
 
 -- Constants
 local ALWAYS, NEVER = -1, -2
-local BPF, CMD, PROG = ffi.typeof('struct bpf'), ffi.typeof('struct bpf_cmd'), ffi.typeof('struct bpf_prog')
+local BPF, CMD = ffi.typeof('struct bpf'), ffi.typeof('struct bpf_cmd')
 local HELPER = ffi.typeof('struct bpf_func_id')
 
 -- Symbolic table of constant expressions over numbers
@@ -73,7 +73,7 @@ local function is_proxy(x)
 end
 
 -- Create compiler closure
-local function create_emitter(env, stackslots, params)
+local function create_emitter(env, stackslots, params, param_types)
 
 local V = {}   -- Variable tracking / register allocator
 local code = { -- Generated code
@@ -157,6 +157,17 @@ end
 
 -- Set new variable
 local function vset(var, reg, const, vtype)
+	-- Must materialise all variables shadowing this variable slot, as it will be overwritten
+	if V[var] and V[var].reg then
+		for k, vinfo in pairs(V) do
+			-- Shadowing variable MUST share the same type and attributes,
+			-- but the register assignment may have changed
+			if vinfo.shadow == var then
+				vinfo.reg = V[var].reg
+				vinfo.shadow = nil
+			end
+		end
+	end
 	-- Get precise type for CDATA or attempt to narrow numeric constant
 	if not vtype and type(const) == 'cdata' then vtype = ffi.typeof(const) end
 	V[var] = {reg=reg, const=const, type=vtype}
@@ -210,13 +221,6 @@ end
 local function vcopy(dst, src)
 	if dst == src then return end
 	V[dst] = {reg=V[src].reg, const=V[src].const, shadow=src, source=V[src].source, type=V[src].type}
-end
-
--- Move variable
-local function vmov(dst, src)
-	if dst == src then return end
-	V[dst] = V[src]
-	V[src] = nil
 end
 
 -- Dereference variable of pointer type
@@ -411,6 +415,8 @@ local function ALU_IMM(dst, a, b, op)
 		if cdef.isptr(V[a].type) then
 			vderef(dst_reg, dst_reg, V[a].const.__dissector)
 			V[dst].type = V[a].const.__dissector
+		else
+			V[dst].type = V[a].type
 		end
 		emit(BPF.ALU64 + BPF[op] + BPF.K, dst_reg, 0, 0, b)
 	end
@@ -534,6 +540,7 @@ local function MAP_GET(dst, map_var, key, imm)
 	vreg(dst, 0, true, ffi.typeof('uint8_t *'))
 	V[dst].const = {__dissector=map.val_type}
 	emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.map_lookup_elem)
+	V[stackslots].reg = nil -- Free temporary registers
 end
 
 local function MAP_SET(map_var, key, key_imm, src)
@@ -568,6 +575,7 @@ local function MAP_SET(map_var, key, key_imm, src)
 	reg_alloc(stackslots, 4) -- Spill anything in R4 (unnamed tmp variable)
 	emit(BPF.ALU64 + BPF.MOV + BPF.K, 4, 0, 0, 0)
 	emit(BPF.JMP + BPF.CALL, 0, 0, 0, HELPER.map_update_elem)
+	V[stackslots].reg = nil -- Free temporary registers
 end
 
 -- Finally - this table translates LuaJIT bytecode into code emitter actions.
@@ -639,7 +647,7 @@ local BC = {
 		else error(string.format("undefined upvalue '%s'", c)) end
 	end,
 	TGETB = function (a, b, _, d) -- TGETB (A = B[D])
-		if not V[a] then vset(a) end
+		if a ~= b then vset(a) end
 		local base = V[b].const
 		if base.__map then -- BPF map read (constant)
 			MAP_GET(a, b, nil, d)
@@ -657,7 +665,7 @@ local BC = {
 	end,
 	TSETV = function (a, b, _, d) -- TSETV (B[D] = A)
 		if V[b].const.__map then -- BPF map read (constant)
-			return MAP_SET(b, d, nil, a) -- D is literal
+			return MAP_SET(b, d, nil, a) -- D is variable
 		elseif V[b].const and V[d].const and V[a].const then
 			V[b].const[V[d].const] = V[a].const
 		else error('NYI: B[D] = A, where B is not Lua table or BPF map')
@@ -686,6 +694,7 @@ local BC = {
 	end,
 	TGETV = function (a, b, _, d) -- TGETV (A = B[D])
 		assert(V[b] and V[b].const, 'NYI: B[D] where B is not Lua table or BPF map')
+		if a ~= b then vset(a) end
 		if V[b].const.__map then -- BPF map read
 			MAP_GET(a, b, d)
 		elseif V[b].const == env.pkt then  -- Raw packet, no offset
@@ -695,7 +704,7 @@ local BC = {
 	TGETS = function (a, b, c, _) -- TGETS (A = B[C])
 		assert(V[b] and V[b].const, 'NYI: B[C] where C is string and B not Lua table or BPF map')
 		local base = V[b].const
-		if base.__dissector then
+		if type(base) == 'table' and base.__dissector then
 			local ofs,bpos,bsize = ffi.offsetof(base.__dissector, c)
 			-- Resolve table key using metatable
 			if not ofs and type(base.__dissector[c]) == 'string' then
@@ -706,7 +715,7 @@ local BC = {
 				BUILTIN(proto[c], a, b, c)
 			else
 				assert(ofs, tostring(base.__dissector)..'.'..c..' attribute not exists')
-				if not V[a] then vset(a) end
+				if a ~= b then vset(a) end
 				-- Dissected value is probably not constant anymore
 				local new_const = nil
 				-- Simple register load, get absolute offset or R-relative
@@ -715,7 +724,7 @@ local BC = {
 					local dst_reg = vreg(a, nil, true)
 					assert(const_width[w], 'NYI: sizeof('..tostring(base.__dissector)..'.'..c..') not 1/2/4/8 bytes')
 					emit(BPF.MEM + BPF.LDX + const_width[w], dst_reg, V[b].reg, ofs, 0)
-				elseif base.__base > 0 then -- SP-relative addressing
+				elseif not base.source and base.__base and base.__base > 0 then -- [FP+K] addressing
 					if cdef.isptr(atype) then -- If the member is pointer type, update base pointer with offset
 						new_const = {__base = base.__base-ofs}
 					else
@@ -824,7 +833,7 @@ local BC = {
 emit(BPF.ALU64 + BPF.MOV + BPF.X, 6, 1, 0, 0)
 -- Register R6 as context variable (first argument)
 if params and params > 0 then
-	vset(0, 6, proto.skb)
+	vset(0, 6, param_types[1] or proto.skb)
 end
 -- Register tmpvars
 vset(stackslots)
@@ -856,6 +865,7 @@ return setmetatable(BC, {
 		end
 		-- Execute
 		if code.reachable then
+			assert(t[op], string.format('NYI: instruction %s, parameters: %s,%s,%s,%s', op,a,b,c,d))
 			return t[op](a, b, c, d)
 		end
 	end,
@@ -906,6 +916,51 @@ local function dump(code)
 		local cls = bit.band(ins.code, 0x07)
 		print(string.format('%04u\t%s', i, cls_map[cls](cls, ins, i)))
 	end
+end
+
+local function compile(prog, params)
+	-- Create code emitter sandbox, include caller locals
+	local env = { pkt=proto.pkt, BPF=BPF }
+	-- Include upvalues up to 4 nested scopes back
+	-- the narrower scope overrides broader scope
+	for k = 5, 2, -1 do
+		local i = 1
+		while true do
+			local ok, n, v = pcall(debug.getlocal, k, i)
+			if not ok or not n then break end
+			env[n] = v
+			i = i + 1
+		end
+	end
+	setmetatable(env, {
+		__index = function (_, k)
+			return proto[k] or builtins[k] or _G[k]
+		end
+	})
+	-- Create code emitter and compile LuaJIT bytecode
+	if type(prog) == 'string' then prog = loadstring(prog) end
+	-- Create error handler to print traceback
+	local funci, pc = bytecode.funcinfo(prog), 0
+	local E = create_emitter(env, funci.stackslots, funci.params, params or {})
+	local on_err = function (e)
+			local funci = bytecode.funcinfo(prog, pc)
+			local from, to = 0, 0
+			for _ = 1, funci.currentline do
+				from = to
+				to = string.find(funci.source, '\n', from+1, true) or 0
+			end
+			print(funci.loc..':'..string.sub(funci.source, from+1, to-1))
+			print('error: '..e)
+			print(debug.traceback())
+	end
+	bytecode.dump(prog)
+	for _,op,a,b,c,d in bytecode.decoder(prog) do
+		local ok, res, err = xpcall(E,on_err,op,a,b,c,d)
+		if not ok then
+			return nil
+		end
+	end
+	return E:compile()
 end
 
 -- BPF map interface
@@ -1096,43 +1151,5 @@ return setmetatable({
 	end,
 	ntoh = builtins.ntoh, hton = builtins.hton,
 }, {
-	__call = function (t, prog)
-		-- Create code emitter sandbox, include caller locals
-		local env = { pkt=proto.pkt }
-		local i = 1
-		while true do
-			local n, v = debug.getlocal(2, i)
-			if not n then break end
-			env[n] = v
-			i = i + 1
-		end
-		setmetatable(env, {
-			__index = function (_, k)
-				return proto[k] or builtins[k] or _G[k]
-			end
-		})
-		-- Create code emitter and compile LuaJIT bytecode
-		if type(prog) == 'string' then prog = loadstring(prog) end
-		-- Create error handler to print traceback
-		local funci, pc = bytecode.funcinfo(prog), 0
-		local E = create_emitter(env, funci.stackslots, funci.params)
-		local on_err = function (e)
-				local funci = bytecode.funcinfo(prog, pc)
-				local from, to = 0, 0
-				for _ = 1, funci.currentline do
-					from = to
-					to = string.find(funci.source, '\n', from+1, true) or 0
-				end
-				print(funci.loc..':'..string.sub(funci.source, from+1, to-1))
-				print('error: '..e)
-				print(debug.traceback())
-		end
-		for _,op,a,b,c,d in bytecode.decoder(prog) do
-			local ok, res, err = xpcall(E,on_err,op,a,b,c,d)
-			if not ok then
-				return nil
-			end
-		end
-		return E:compile()
-	end,
+	__call = function (t, prog) return compile(prog) end,
 })
